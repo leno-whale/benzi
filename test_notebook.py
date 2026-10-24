@@ -402,13 +402,13 @@ def test_balance():
             break
         ok, _ = quiet(g.move, d)
         if ok:
-            g.check_end()
+            quiet(g.check_end)
             if not g.over:
                 g.next_round()
         if g.pos in g.hidden and not g.over:
             ok, _ = quiet(g.copy)
             if ok:
-                g.check_end()
+                quiet(g.check_end)
                 if not g.over:
                     g.next_round()
     check("实跑全程扫荡+抄：判负", g.over == "lose", str(g.over))
