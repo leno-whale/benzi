@@ -7,16 +7,18 @@
 问题是：有人也在往本子上写，而且写得比你好听。
 
 规则：
-  · 十四次醒来。用完就没了，不是死，是一天到此为止。
+  · 十三次醒来。用完就没了，不是死，是一天到此为止。
   · 本子只有三页。写新的，就得挤掉旧的。
-  · 三张「原话」散在屋子里，集齐、回到门厅站在灯下，后门才开。
+  · 三张「原话」散在屋子里，抄进本子、回到门厅站在灯下，后门才开。
+  · 后门的锁还有一道：你得亲手验过一页墨迹。不验，门不认。
   · 原话占本子的页，而且挤不掉 —— 所以你得替它腾地方。
   · 每三次醒来，有人替你写一页。那页看着像你写的，其实不是。
   · 验出假页可以撕掉，能腾回一页纸。
 
-动作（走路、写字、验墨迹各花掉一次醒来）：
+动作（走路、写字、抄写、验墨迹各花掉一次醒来）：
   n/s/e/w 或 北/南/东/西   走一步
   写 <一句话>              写进本子（最多 60 字）
+  抄                       把面前的原话抄进本子（花一次醒来）
   验 <页码>                验那页的墨迹是谁的
   看                       看屋里和本子（这个不花醒来）
   退                       合上本子
@@ -42,7 +44,7 @@ C = {
 if "--plain" in sys.argv:
     C = {k: "" for k in C}
 
-WAKES = 14          # 十四次醒来
+WAKES = 13          # 十三次醒来
 PAGES = 3           # 本子三页
 PIECES_NEEDED = 3
 
@@ -55,7 +57,7 @@ ROOMS = {
     (1, 2): ("书房", "桌上摊着这本本子，只剩三页。"),
     (2, 0): ("锅炉房", "热。管道里有声音，像有人在很远的地方说话。"),
     (2, 1): ("厨房", "水龙头没关紧，一滴一滴。碗柜开着。"),
-    (2, 2): ("后门", "锁着。锁面上有三个槽。"),
+    (2, 2): ("后门", "锁着。锁面上有三个槽。槽下面还有一道旧划痕，像刻着一个「验」字。"),
 }
 ARROWS = {"n": (0, 1), "北": (0, 1), "s": (0, -1), "南": (0, -1),
           "e": (1, 0), "东": (1, 0), "w": (-1, 0), "西": (-1, 0)}
@@ -99,7 +101,7 @@ ENDINGS = {
     "B": [
         "后门开了。三个槽，三张纸，正好。",
         "",
-        "你站在灯下。本子摊开。三页都是原话，一句你的也没有 —— 不是被挤掉，是你一次也没写。",
+        "你站在灯下。本子摊开。三页都是原话，一句你的也没有 —— 不是被挤掉，是你一次也没写自己的字。",
         "",
         "三个槽合上的时候，后门那边响了一声。声音不大，像是有人提前把门拉开了。",
         "",
@@ -239,7 +241,7 @@ class Notebook:
         self.visited = {(0, 0)}
         self.pages = [{"text": "醒来时你在门厅。本子只剩三页，写过的会被挤掉。",
                        "ink": 0, "real": True, "piece": False}]
-        self.pieces = []          # 已拿到的原话
+        self.pieces = []          # 已抄进本子的原话
         self.own_evicted = []     # 被挤掉的、自己写的句子（不含第一页）
         self.fake_pool = FAKES[:]
         self.rng.shuffle(self.fake_pool)
@@ -251,6 +253,7 @@ class Notebook:
             spots.remove(room)
             self.hidden[room] = piece
         self.over = None
+        self.hinted = False
         self.log = []
 
     # ── 输出 ─────────────────────────────────────────────
@@ -281,6 +284,11 @@ class Notebook:
         print(f"{C['b']}{name}{C['off']}　{C['dim']}{desc}{C['off']}")
         if self.debug and self.pos in self.hidden:
             print(f"{C['rd']}[debug] 这里有原话{C['off']}")
+        if self.pos in self.hidden:
+            piece = self.hidden[self.pos]
+            print(f"{C['ye']}桌上有一张纸。你读了一遍，还没抄进本子：{C['off']}")
+            print(f"  {C['ye']}「{piece}」{C['off']}")
+            print(f"{C['dim']}（出了这间屋子就忘了。想留住它，得抄。）{C['off']}")
         self.banner("本子")
         for i, p in enumerate(self.pages, 1):
             tag = f"{C['ye']}[原话]{C['off']} " if p["piece"] else ""
@@ -288,7 +296,7 @@ class Notebook:
         if not self.pages:
             print(f"  {C['dim']}（空的。你一页都没给自己留。）{C['off']}")
         if self.pieces:
-            print(f"{C['dim']}原话 {len(self.pieces)}/{PIECES_NEEDED}{C['off']}")
+            print(f"{C['dim']}已抄原话 {len(self.pieces)}/{PIECES_NEEDED}{C['off']}")
         if full:
             self.banner("本子背面（走过的地方）")
             print(self.map_text())
@@ -329,15 +337,6 @@ class Notebook:
         self.visited.add(self.pos)
         where = ROOMS[self.pos][0]
         print(f"你走到{C['b']}{where}{C['off']}。")
-        if self.pos in self.hidden:
-            piece = self.hidden.pop(self.pos)
-            self.pieces.append(piece)
-            if self.push(piece, piece=True):
-                print(f"{C['ye']}桌上有一张纸。你拿起来，读了一遍，抄进本子：{C['off']}")
-            else:
-                print(f"{C['ye']}桌上有一张纸。你读了一遍 —— 本子满了，你只能背下来：{C['off']}")
-            print(f"  {C['ye']}「{piece}」{C['off']}")
-            print(f"{C['dim']}（这一页挤不掉。它不是笔记，是原话。）{C['off']}")
         return True
 
     def write(self, text):
@@ -351,6 +350,23 @@ class Notebook:
             return False
         self.log.append(("write", self.round))
         print(f"你写了一句。{C['dim']}墨迹：第 {self.round} 次醒来。{C['off']}")
+        return True
+
+    def copy(self):
+        """把面前的原话抄进本子。进纸房只是看见，抄了才带走。"""
+        if self.pos not in self.hidden:
+            print(f"{C['dim']}这里没有纸可抄。{C['off']}")
+            return False
+        piece = self.hidden[self.pos]
+        if not self.push(piece, piece=True):          # 防御：正常不会失败（只有三张原话）
+            print(f"{C['dim']}本子满了。三页都被原话占着 —— 你在心里念了一遍，没地方抄。{C['off']}")
+            return False
+        self.hidden.pop(self.pos)
+        self.pieces.append(piece)
+        self.log.append(("copy", self.round))
+        print(f"{C['ye']}你把这句话抄进本子：{C['off']}")
+        print(f"  {C['ye']}「{piece}」{C['off']}")
+        print(f"{C['dim']}（这一页挤不掉。它不是笔记，是原话。）{C['off']}")
         return True
 
     def verify(self, i):
@@ -369,11 +385,21 @@ class Notebook:
             print(f"{C['gr']}这一页的墨迹是旧的，没有编号。上一轮的你在门厅写的。{C['off']}")
         else:
             print(f"{C['gr']}墨迹：第 {p['ink']} 次醒来。是你。{C['off']}")
+        self.log.append(("check", i))
         return True
+
+    def verified(self):
+        """后门认的是墨迹：至少验过一页（验真或验伪都算）。"""
+        return any(e[0] in ("check", "caught") for e in self.log)
 
     def check_end(self):
         if len(self.pieces) >= PIECES_NEEDED and self.pos == (0, 0):
-            self.over = "win"
+            if self.verified():
+                self.over = "win"
+            elif not self.hinted:
+                self.hinted = True
+                print(f"{C['dim']}三个槽对齐了，门没开。锁上还有一道："
+                      f"你得亲手验过一页墨迹。{C['off']}")
 
     # ── 结局 ─────────────────────────────────────────────
     def counts(self):
@@ -443,7 +469,7 @@ class Notebook:
         print(f"{C['cy']}{'═' * 46}{C['off']}")
         print(f"{C['b']}　　本　　子　　{C['off']}")
         print(f"{C['dim']}{WAKES} 次醒来。三页纸。三张原话。{C['off']}")
-        print(f"{C['dim']}走一步、写一句、验一页，各花掉一次醒来。看，不花。{C['off']}")
+        print(f"{C['dim']}走一步、写一句、抄一句、验一页，各花掉一次醒来。看，不花。{C['off']}")
         print(f"{C['cy']}{'═' * 46}{C['off']}")
         while not self.over:
             self.show()
@@ -472,6 +498,8 @@ class Notebook:
                 else:
                     print(f"{C['dim']}写什么？写 <一句话>。{C['off']}")
                     continue
+            elif head in ("抄", "copy"):
+                acted = self.copy()
             elif head in ("验", "verify"):
                 if rest.strip().isdigit():
                     acted = self.verify(int(rest.strip()))
@@ -479,7 +507,8 @@ class Notebook:
                     print(f"{C['dim']}验 <页码>。{C['off']}")
                     continue
             else:
-                print(f"{C['dim']}不认识。n/s/e/w 走，写 <话>，验 <页码>，看，退。{C['off']}")
+                print(f"{C['dim']}不认识。n/s/e/w 走，写 <话>，抄，验 <页码>，看，退。{C['off']}")
+                print(f"{C['dim']}后门要三张原话，还要你验过一页。{C['off']}")
                 continue
             if acted:
                 self.check_end()

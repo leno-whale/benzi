@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本子 —— 自动化测试
+"""本子 v0.2 —— 自动化测试
 
     python test_notebook.py
 
@@ -17,6 +17,8 @@ from collections import deque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOK = os.path.join(HERE, "notebook.py")
+if not os.path.exists(NOTEBOOK):
+    NOTEBOOK = os.path.join(HERE, "notebook_v02.py")
 
 _spec = importlib.util.spec_from_file_location("nb", NOTEBOOK)
 nb = importlib.util.module_from_spec(_spec)
@@ -103,8 +105,52 @@ def test_api():
 
     g = nb.Notebook(seed=1)
     walk(g, path_to((0, 0), hidden[0]))
-    check("进隐藏房拿到原话", len(g.pieces) >= 1)
+    check("进隐藏房 pieces 仍 0（不自动抄）", len(g.pieces) == 0)
+    check("进隐藏房纸仍在桌上", hidden[0] in g.hidden)
+    ok, out = quiet(g.copy)
+    check("抄写成功", ok is True)
+    check("抄后 pieces=1", len(g.pieces) == 1)
+    check("抄后 hidden 移除", hidden[0] not in g.hidden)
     check("原话落成了本子的一页", any(p["piece"] and p["text"] in nb.PIECES for p in g.pages))
+    check("抄写写了 copy 日志", any(e[0] == "copy" for e in g.log), str(g.log[-1:]))
+
+    g = nb.Notebook(seed=2)
+    round_before = g.round
+    ok, out = quiet(g.copy)
+    check("没有纸时抄：返回 False", ok is False)
+    check("没有纸时抄：不花醒来", g.round == round_before)
+    check("没有纸时抄：有提示", "没有纸可抄" in out)
+
+    g = nb.Notebook(seed=2)
+    room = next(iter(g.hidden))
+    walk(g, path_to((0, 0), room))
+    # 找一间不是纸房的邻屋，离开再回来
+    for d in "nsew":
+        dx, dy = nb.ARROWS[d]
+        nxt = (g.pos[0] + dx, g.pos[1] + dy)
+        if nxt in nb.ROOMS and nxt not in g.hidden:
+            walk(g, [d])
+            break
+    check("不抄离开：纸还在", room in g.hidden)
+    walk(g, path_to(g.pos, room))
+    check("重进纸房：还能看见", room in g.hidden)
+    ok, _ = quiet(g.copy)
+    check("重进纸房：能抄", ok is True)
+    walk(g, path_to(g.pos, room))
+    check("抄过再回：不再有纸", room not in g.hidden)
+
+    # 防御分支：本子三页全是原话时，抄写失败且不花醒来、不丢纸
+    g = nb.Notebook(seed=4)
+    g.pages = [{"text": p, "ink": 0, "real": True, "piece": True} for p in nb.PIECES]
+    g.pieces = list(nb.PIECES)
+    g.pos = (1, 1)
+    g.hidden = {(1, 1): "第四张？"}
+    round_before = g.round
+    ok, out = quiet(g.copy)
+    check("满本抄写：返回 False", ok is False)
+    check("满本抄写：不花醒来", g.round == round_before)
+    check("满本抄写：纸没丢", (1, 1) in g.hidden)
+    check("满本抄写：pieces 没变", len(g.pieces) == 3)
 
     g = nb.Notebook(seed=2)
     for t in ("甲甲", "乙乙", "丙丙"):
@@ -165,6 +211,7 @@ def test_api():
     g = nb.Notebook(seed=11)
     ok, out = quiet(g.verify, 9)
     check("验不存在的页：失败并提示", ok is False and "没有这一页" in out)
+    check("验不存在的页：不留痕", not any(e[0] == "check" for e in g.log))
 
     g = nb.Notebook(seed=12)
     ok60, _ = quiet(g.write, "字" * 60)
@@ -172,10 +219,27 @@ def test_api():
     check("60 字可以写", ok60 is True)
     check("61 字被拒绝并提示", ok61 is False and "太长了" in out61)
 
+    # v0.3：后门要三张原话，还要你亲手验过一页
     g = nb.Notebook(seed=13)
     g.pieces = ["a", "b", "c"]
+    ok, out = quiet(g.check_end)
+    check("3 原话在门厅但没验过：不赢", g.over is None)
+    check("3 原话没验过：门提示第二道锁", "验过一页" in out)
+    quiet(g.check_end)
+    check("提示只出一次", g.hinted is True)
+
+    g = nb.Notebook(seed=13)
+    g.pieces = ["a", "b", "c"]
+    quiet(g.verify, 1)                   # 验的是开场页，也算验过
     g.check_end()
-    check("3 原话在门厅：赢", g.over == "win")
+    check("验过一页（哪怕验的是开场页）：赢", g.over == "win")
+
+    g = nb.Notebook(seed=13)
+    g.pieces = ["a", "b", "c"]
+    quiet(g.verify, 1)
+    g.pos = (1, 1)
+    g.check_end()
+    check("验过了但不在门厅：不赢", g.over is None)
 
     g = nb.Notebook(seed=13)
     g.pieces = ["a", "b", "c"]
@@ -191,13 +255,13 @@ def test_api():
     g = nb.Notebook(seed=13)
     for _ in range(nb.WAKES):
         g.next_round()
-    check("第 15 次醒来：耗尽判负", g.over == "lose")
+    check("醒来耗尽判负", g.over == "lose" and g.round == nb.WAKES + 1, str(g.round))
 
 
 def test_e2e():
     group("端到端（真实 stdin）")
 
-    # 按 seed 3 的真实布局算一条最短路线：不写字、不验页，直接通关
+    # 按 seed 3 的真实布局算一条最短路线；每进一间纸房先 `抄`
     g = nb.Notebook(seed=3)
     rooms = list(g.hidden.keys())
 
@@ -211,21 +275,33 @@ def test_e2e():
         return len(seq) + len(back), seq + back
 
     seq = min((route_len(p) for p in itertools.permutations(rooms)), key=lambda t: t[0])[1]
-    r = run(["--plain", "--seed", "3"], "\n".join(seq) + "\n")
+    cmds, pos, copied = [], (0, 0), set()
+    for d in seq:
+        cmds.append(d)
+        dx, dy = nb.ARROWS[d]
+        pos = (pos[0] + dx, pos[1] + dy)
+        if pos in rooms and pos not in copied:
+            cmds.append("抄")
+            copied.add(pos)
+            if len(copied) == 1:                # v0.3：抄完第一张顺手验它（后门要验过一页）
+                cmds.append("验 2")
+    r = run(["--plain", "--seed", "3"], "\n".join(cmds) + "\n")
     out = r.stdout
     check("胜局：退出码 0", r.returncode == 0)
     check("胜局：后门开了", "后门开了" in out)
-    check("胜局：原话 3/3", "原话 3/3" in out)
-    check("胜局：全程没验过页", "你验出来 0 页" in out)
+    check("胜局：已抄原话 3/3", "已抄原话 3/3" in out)
+    check("胜局：验过一页（原话）", "原话不用编号" in out)
+    check("胜局：撕掉 0 页", "你验出来 0 页" in out)
     check("--plain 没有颜色转义", "\x1b[" not in out)
 
     r = run(["--plain", "--seed", "3"], "n\ns\n" * 7)
-    check("败局：醒来耗尽", r.returncode == 0 and "第 14 次醒来用完了" in r.stdout)
+    check("败局：醒来耗尽", r.returncode == 0 and f"第 {nb.WAKES} 次醒来用完了" in r.stdout)
 
     r = run(["--plain", "--seed", "2"], "s\n看\n写 " + "字" * 61 + "\n验 9\n乱打\n退\n")
     out = r.stdout
-    check("无效指令：不花醒来", "第 1/14 次醒来" in out and "第 2/14 次醒来" not in out)
+    check("无效指令：不花醒来", f"第 1/{nb.WAKES} 次醒来" in out and f"第 2/{nb.WAKES} 次醒来" not in out)
     check("无效指令：各有提示", all(k in out for k in ("那边没有门", "太长了", "没有这一页", "不认识")))
+    check("帮助里提到抄", "抄" in out and "不认识" in out)
     check("退：打印结算", "这一局：原话" in out)
 
     r = run(["--plain", "--seed", "13"], "验 1\n看\n退\n")
@@ -234,33 +310,110 @@ def test_e2e():
     check("B1 端到端：本子没被清空", "（空的。你一页都没给自己留。）" not in out)
 
 
-def test_sweep():
-    group("300 种子扫荡")
+def _route_cost(hidden, route, copy=True, stop_at_three=False, verify=True):
+    """按固定顺序走；copy 时进纸房抄 1 次；verify 时第一次抄完顺手验一页（后门要）。"""
+    pos, got, cost, done = (0, 0), set(), 0, False
+    for ch in route:
+        dx, dy = nb.ARROWS[ch]
+        pos = (pos[0] + dx, pos[1] + dy)
+        cost += 1
+        if pos in hidden and pos not in got:
+            got.add(pos)
+            if copy:
+                cost += 1
+                if verify and not done:
+                    cost += 1
+                    done = True
+                if stop_at_three and len(got) == 3:
+                    cost += abs(pos[0]) + abs(pos[1])
+                    return cost
+    return cost
 
-    sweep = "nneeswseww"          # 走遍 9 间、回门厅，共 10 步
-    wins, dropped, size_bad = 0, 0, 0
-    bad = []
+
+def _optimal_cost(hidden):
+    best = None
+    for order in itertools.permutations(hidden):
+        cur, cost = (0, 0), 0
+        for r in order:
+            cost += abs(cur[0] - r[0]) + abs(cur[1] - r[1])
+            cur = r
+        cost += abs(cur[0]) + abs(cur[1]) + 4      # 3 次抄 + 1 次验
+        best = cost if best is None else min(best, cost)
+    return best
+
+
+def test_balance():
+    group("平衡性（56 布局 + 300 种子）")
+
+    sweep = "nneeswseww"
+    ham = "eennwwse"             # 8 步哈密顿，终点客厅 (1,1)
+    spots = [r for r in nb.ROOMS if r != (0, 0)]
+    layouts = list(itertools.combinations(spots, 3))
+
+    full56 = sum(_route_cost({r: "x" for r in L}, sweep) <= nb.WAKES for L in layouts)
+    stop56 = sum(_route_cost({r: "x" for r in L}, sweep, stop_at_three=True) <= nb.WAKES for L in layouts)
+    ham56 = sum(_route_cost({r: "x" for r in L}, ham, stop_at_three=True) <= nb.WAKES for L in layouts)
+    opt56 = sum(_optimal_cost({r: "x" for r in L}) <= nb.WAKES for L in layouts)
+
+    check("56 布局：走完全程+抄 0 胜", full56 == 0, str(full56))
+    check("56 布局：扫到第三张即回 35 胜", stop56 == 35, str(stop56))
+    check("56 布局：8 步哈密顿 35 胜", ham56 == 35, str(ham56))
+    check("56 布局：全知 56 胜", opt56 == 56, str(opt56))
+
+    wins_full = wins_stop = wins_ham = wins_opt = 0
+    bad_pages = 0
+    loss_steps = {}
+    opt_costs = {}
     for seed in range(300):
-        g = nb.Notebook(seed=seed)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            for d in sweep:
-                if not g.move(d):
-                    break
+        hidden = dict(nb.Notebook(seed=seed).hidden)
+        wins_full += _route_cost(hidden, sweep) <= nb.WAKES
+        c = _route_cost(hidden, sweep, stop_at_three=True)
+        if c <= nb.WAKES:
+            wins_stop += 1
+        else:
+            # 复算第三张在第几步：用同一路线重放
+            pos, got = (0, 0), set()
+            for i, ch in enumerate(sweep, 1):
+                dx, dy = nb.ARROWS[ch]
+                pos = (pos[0] + dx, pos[1] + dy)
+                if pos in hidden and pos not in got:
+                    got.add(pos)
+                    if len(got) == 3:
+                        loss_steps[i] = loss_steps.get(i, 0) + 1
+                        break
+        wins_ham += _route_cost(hidden, ham, stop_at_three=True) <= nb.WAKES
+        oc = _optimal_cost(hidden)
+        wins_opt += oc <= nb.WAKES
+        opt_costs[oc] = opt_costs.get(oc, 0) + 1
+        bad_pages += len(nb.Notebook(seed=seed).pages) > nb.PAGES
+
+    check("300 种子：走完全程+抄 0 胜", wins_full == 0, str(wins_full))
+    check("300 种子：扫到第三张即回 180 胜", wins_stop == 180, str(wins_stop))
+    check("300 种子：8 步哈密顿 55%–70%", 165 <= wins_ham <= 210, str(wins_ham))
+    check("300 种子：全知 300 胜", wins_opt == 300, str(wins_opt))
+    check("输局第三张都在第 8 步", loss_steps == {8: 120}, str(loss_steps))
+    check("全知成本分布 8/10/12", opt_costs == {8: 4, 10: 108, 12: 188}, str(opt_costs))
+    check("页数从不超 3", bad_pages == 0)
+
+    # 实跑一局「走完全程 + 抄」：第 13 次成本前就耗尽，且本子不超页
+    g = nb.Notebook(seed=0)
+    for d in sweep:
+        if g.over:
+            break
+        ok, _ = quiet(g.move, d)
+        if ok:
+            g.check_end()
+            if not g.over:
+                g.next_round()
+        if g.pos in g.hidden and not g.over:
+            ok, _ = quiet(g.copy)
+            if ok:
                 g.check_end()
                 if not g.over:
                     g.next_round()
-        if g.over == "win":
-            wins += 1
-        else:
-            bad.append(seed)
-        if len(g.pieces) != nb.PIECES_NEEDED:
-            dropped += 1
-        if len(g.pages) > nb.PAGES:
-            size_bad += 1
-    check("10 步全屋扫荡：300 局全胜", wins == 300, f"没赢的种子 {bad[:5]}")
-    check("扫荡：原话一张不落", dropped == 0)
-    check("扫荡：本子从不超页", size_bad == 0)
+    check("实跑全程扫荡+抄：判负", g.over == "lose", str(g.over))
+    check("实跑全程扫荡+抄：预算耗尽", g.round == nb.WAKES + 1, str(g.round))
+    check("实跑全程扫荡+抄：页数≤3", len(g.pages) <= nb.PAGES)
 
 
 def _pg(text, real=True, piece=False, ink=3):
@@ -377,7 +530,7 @@ def main():
     test_api()
     test_endings()
     test_e2e()
-    test_sweep()
+    test_balance()
     print()
     for title, total, passed in GROUPS:
         print(f"  {title}：{passed}/{total}")

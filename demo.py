@@ -28,7 +28,21 @@ while cur!=(0,0):
     elif dy>0: cmds.append("n"); cur=(cur[0],cur[1]+1)
     else: cmds.append("s"); cur=(cur[0],cur[1]-1)
 print("seed",seed,"路线", " ".join(cmds), "(共", len(cmds), "步, 预算", nb.WAKES, ")")
+actions=[]
+cur=(0,0); copied=set()
+for d in cmds:
+    actions.append(d)
+    if d=="n": cur=(cur[0],cur[1]+1)
+    elif d=="s": cur=(cur[0],cur[1]-1)
+    elif d=="e": cur=(cur[0]+1,cur[1])
+    else: cur=(cur[0]-1,cur[1])
+    if cur in rooms and cur not in copied:
+        actions.append("抄")
+        copied.add(cur)
+        if len(copied) == 1:                 # v0.3：后门要验过一页
+            actions.append("验 2")
+print("动作", " ".join(actions), "(共", len(actions), "次醒来)")
 env=dict(os.environ); env["PYTHONUTF8"]="1"
-out=subprocess.run([sys.executable,P,"--seed",str(seed)],input="\n".join(cmds)+"\n",capture_output=True,text=True,encoding="utf-8",env=env).stdout
+out=subprocess.run([sys.executable,P,"--seed",str(seed)],input="\n".join(actions)+"\n",capture_output=True,text=True,encoding="utf-8",env=env).stdout
 lines=out.splitlines()
 print("\n".join(lines[-26:]))
