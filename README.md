@@ -85,19 +85,10 @@ python test_notebook.py     # 52 项 API 规则 + 29 项结局 + 13 项真实 st
 
 ## 开发
 
-这台机器上 `git push https://github.com/...` 连不上（443 超时），只有 `api.github.com` 通。
-所以本地照常用 git 提交，推上去走脚本：
+CI 在 `.github/workflows/test.yml`：每次推上去都跑一遍 `test_notebook.py` 和 `demo.py`。
 
-```
-node tools/push.mjs "提交说明"
-```
-
-它用 git data API 把工作区整个推成一个提交（token 取 `GH_TOKEN` 或 `%USERPROFILE%\.bili-ai\github.json`）。
-`git push` 哪天通了，就换回 `git push origin main`，脚本留着当备胎。
-
-CI 在 `.github/workflows/test.yml`：每次推都跑一遍 `test_notebook.py` 和 `demo.py`。
+本地推送用 `node tools/push.mjs "提交说明"`（这台机器上 `git push` 走 443 不通，脚本改走 git data API，token 从 `GH_TOKEN` 环境变量读）。`git push` 哪天通了就换回 `git push origin main`，脚本留着当备胎。
 
 ## 致谢
 
-测试与修复（B1 开局验页被撕、B2 测试脚本不走回合、启动器缺失）来自一次外部 QA 辅助，
-测试计划见 [测试计划.md](测试计划.md)。
+v0.2 那版平衡性改造由一份外部团队的报告推动：他们交了测试计划、一版实现和报告（[技术报告-v0.2.md](技术报告-v0.2.md)），我逐项复核、自己重跑，才在此基础上拍下 v0.3 的「验」。开局验页被误撕（B1）、测试脚本不走回合（B2）、启动器缺失这三个 bug 是那次找出来的，测试计划见 [测试计划.md](测试计划.md)。
