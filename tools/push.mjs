@@ -4,7 +4,8 @@
 //
 //   node tools/push.mjs "提交说明"
 //
-// token 从环境变量 GH_TOKEN 或 %USERPROFILE%\.bili-ai\github.json 拿。
+// token：环境变量 GH_TOKEN，或 %USERPROFILE%\.bili-ai\github.json。
+// 优先用 `benzi-game token`（细粒度，带 Workflows 写权限），没有再退回 `token`。
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +18,8 @@ function token() {
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN.trim();
   const p = path.join(os.homedir(), ".bili-ai", "github.json");
   const j = JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
-  return j.token.trim();
+  const fine = j["benzi-game token"] || j["game token"];
+  return String(fine || j.token).trim();
 }
 
 const H = {
@@ -51,24 +53,31 @@ function walk(dir, base = "") {
   return out;
 }
 
-const files = walk(process.cwd()).filter((f) => {
-  // 推送用的 token 没有 workflow 权限，带 .github/workflows 的树会整棵被拒（404）。
-  if (f.rel.startsWith(".github/workflows/")) {
-    console.log(`⚠ 跳过 ${f.rel}：token 缺 workflow 权限，推不了工作流文件`);
-    return false;
+async function makeBlobs(list) {
+  const blobs = [];
+  for (const f of list) {
+    const content = fs.readFileSync(f.full).toString("base64");
+    const b = await call("POST", `${api}/git/blobs`, { content, encoding: "base64" });
+    blobs.push({ path: f.rel, mode: "100644", type: "blob", sha: b.sha });
   }
-  return true;
-});
-const msg = process.argv[2] || "update";
-
-const blobs = [];
-for (const f of files) {
-  const content = fs.readFileSync(f.full).toString("base64");
-  const b = await call("POST", `${api}/git/blobs`, { content, encoding: "base64" });
-  blobs.push({ path: f.rel, mode: "100644", type: "blob", sha: b.sha });
+  return blobs;
 }
 
-const tree = await call("POST", `${api}/git/trees`, { tree: blobs });
+const files = walk(process.cwd());
+const msg = process.argv[2] || "update";
+
+let used = files;
+let tree;
+try {
+  tree = await call("POST", `${api}/git/trees`, { tree: await makeBlobs(files) });
+} catch (e) {
+  // 旧 token 没有 workflow 权限时，带 .github/workflows 的树会被整棵拒掉。
+  const keep = files.filter((f) => !f.rel.startsWith(".github/workflows/"));
+  if (keep.length === files.length) throw e;
+  console.log(`⚠ 这次用的 token 不接受工作流文件，跳过 .github/workflows/ 重试（${e.message.slice(0, 70)}…）`);
+  used = keep;
+  tree = await call("POST", `${api}/git/trees`, { tree: await makeBlobs(keep) });
+}
 
 let parents = [];
 try {
@@ -86,5 +95,6 @@ if (parents.length) {
   await call("POST", `${api}/git/refs`, { ref: `refs/heads/${branch}`, sha: commit.sha });
 }
 
-console.log(`✓ ${files.length} 个文件 → ${owner}/${repo}@${branch}  ${commit.sha.slice(0, 7)}  ${msg}`);
+const wf = used.filter((f) => f.rel.startsWith(".github/workflows/")).length;
+console.log(`✓ ${used.length} 个文件（其中工作流 ${wf} 个）→ ${owner}/${repo}@${branch}  ${commit.sha.slice(0, 7)}  ${msg}`);
 console.log(`  https://github.com/${owner}/${repo}/commit/${commit.sha}`);

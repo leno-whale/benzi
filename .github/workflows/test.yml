@@ -1,0 +1,18 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 跑测试（API 规则 + 真实 stdin 端到端 + 300 种子）
+        run: python test_notebook.py
+      - name: 演示局能通关
+        run: python demo.py
