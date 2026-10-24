@@ -1,7 +1,7 @@
-本子 —— 怎么玩
+没有编号 —— 怎么玩
 ================
 
-运行（需要 python，Windows 上双击「本子-游戏.bat」也行）：
+运行（需要 python，Windows 上双击「没有编号.bat」也行）：
 
     python notebook.py
 
