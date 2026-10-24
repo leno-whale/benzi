@@ -254,6 +254,7 @@ class Notebook:
             self.hidden[room] = piece
         self.over = None
         self.hinted = False
+        self.door_hint = False
         self.log = []
 
     # ── 输出 ─────────────────────────────────────────────
@@ -367,6 +368,10 @@ class Notebook:
         print(f"{C['ye']}你把这句话抄进本子：{C['off']}")
         print(f"  {C['ye']}「{piece}」{C['off']}")
         print(f"{C['dim']}（这一页挤不掉。它不是笔记，是原话。）{C['off']}")
+        if len(self.pieces) >= PIECES_NEEDED and not self.door_hint:
+            self.door_hint = True
+            print(f"{C['cy']}三张都齐了。回门厅之前记着：那扇门认纸，也认墨迹 —— "
+                  f"你得亲手验过一页。{C['off']}")
         return True
 
     def verify(self, i):

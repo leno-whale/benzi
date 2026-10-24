@@ -119,6 +119,21 @@ def test_api():
     ok, out = quiet(g.copy)
     check("没有纸时抄：返回 False", ok is False)
     check("没有纸时抄：不花醒来", g.round == round_before)
+
+    # 抄到第三张时提示一次「门认墨迹」——不然第一次玩的人在门口才明白，那时已经晚一步
+    g = nb.Notebook(seed=13)
+    g.hidden = {(0, 1): "甲", (1, 1): "乙", (0, 2): "丙"}
+    for pos in [(0, 1), (1, 1)]:
+        g.pos = pos
+        ok, out = quiet(g.copy)
+        check(f"抄第 {len(g.pieces)} 张：不出门前提示", "认墨迹" not in out)
+    g.pos = (0, 2)
+    ok, out = quiet(g.copy)
+    check("抄到第三张：提示门认墨迹", "认墨迹" in out)
+    check("只要三张齐就记下提示过", g.door_hint is True)
+
+    g = nb.Notebook(seed=2)
+    ok, out = quiet(g.copy)
     check("没有纸时抄：有提示", "没有纸可抄" in out)
 
     g = nb.Notebook(seed=2)

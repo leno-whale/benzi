@@ -16,6 +16,14 @@ python notebook.py --plain    # 关掉颜色
 
 Windows 上双击 `本子游戏.bat` 也行（需要 PATH 里有 python）。
 
+只用标准库（`random` / `sys` / `input`），Windows / macOS / Linux 都能跑；终端没有颜色就加 `--plain`。
+不会交互也能玩：把动作按行喂给 stdin 就行（`Get-Content 路线.txt | python notebook.py`）。
+
+### 第一次玩，别想着赢
+
+第一局随便走，先弄明白「进屋子只是看见、得自己抄」这件事。
+第二局用 `--seed 7` 把同一局重走一遍 —— 那时候你知道纸在哪，赢的是「怎么排先后」，不是运气。
+
 ## 规则
 
 - 十三次醒来。用完就没了。
@@ -47,7 +55,7 @@ C 和 G 的分界是「有没有验过」：验了 → D，没验但被挤掉 �
 ## 测
 
 ```
-python test_notebook.py     # 52 项 API 规则 + 29 项结局 + 13 项真实 stdin 端到端 + 14 项平衡性扫描
+python test_notebook.py     # 56 项 API 规则 + 29 项结局 + 13 项真实 stdin 端到端 + 14 项平衡性扫描
 ```
 
 ## 已知取舍（v0.3）
@@ -88,6 +96,8 @@ python test_notebook.py     # 52 项 API 规则 + 29 项结局 + 13 项真实 st
 CI 在 `.github/workflows/test.yml`：每次推上去都跑一遍 `test_notebook.py` 和 `demo.py`。
 
 本地推送用 `node tools/push.mjs "提交说明"`（这台机器上 `git push` 走 443 不通，脚本改走 git data API，token 从 `GH_TOKEN` 环境变量读）。`git push` 哪天通了就换回 `git push origin main`，脚本留着当备胎。
+
+**许可**：MIT（随便改、随便发，署名留着就行）。见 [LICENSE](LICENSE)。
 
 ## 致谢
 
