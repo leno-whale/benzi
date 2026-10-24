@@ -136,6 +136,16 @@ def test_api():
     ok, out = quiet(g.copy)
     check("没有纸时抄：有提示", "没有纸可抄" in out)
 
+    # 2026-10-24 夜加：踩回走过的屋子，第一次自动亮出本子背面
+    g = nb.Notebook(seed=2)
+    check("开局没亮过地图", g.map_shown is False)
+    walk(g, ["n"])
+    check("走进新屋子不亮地图", g.map_shown is False)
+    ok, out = quiet(lambda: g.move("s"))
+    check("踩回旧屋：亮地图", g.map_shown is True and "你来过" in out)
+    ok, out = quiet(lambda: g.move("n"))
+    check("地图只亮一次", g.map_shown is True and "你来过" not in out)
+
     g = nb.Notebook(seed=2)
     room = next(iter(g.hidden))
     walk(g, path_to((0, 0), room))

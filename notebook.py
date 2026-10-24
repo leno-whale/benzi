@@ -239,6 +239,7 @@ class Notebook:
         self.round = 1
         self.pos = (0, 0)
         self.visited = {(0, 0)}
+        self.map_shown = False    # 踩回旧屋时自动亮一次本子背面
         self.pages = [{"text": "醒来时你在门厅。本子只剩三页，写过的会被挤掉。",
                        "ink": 0, "real": True, "piece": False}]
         self.pieces = []          # 已抄进本子的原话
@@ -334,10 +335,18 @@ class Notebook:
         if (nx, ny) not in ROOMS:
             print(f"{C['dim']}那边没有门。{C['off']}")
             return False
+        revisit = (nx, ny) in self.visited
         self.pos = (nx, ny)
         self.visited.add(self.pos)
         where = ROOMS[self.pos][0]
         print(f"你走到{C['b']}{where}{C['off']}。")
+        # 第一次踩回走过的地方，把本子背面亮一次。
+        # 2026-10-24 夜里浔屿说「最想做的事是看一眼地图」，
+        # 而 `看` 一直是免费的、却没人用 —— 免费的东西不会被人想起来。
+        if revisit and not self.map_shown:
+            self.map_shown = True
+            print(f"{C['dim']}这间你来过。你翻开本子背面看了一眼：{C['off']}")
+            print(self.map_text())
         return True
 
     def write(self, text):
