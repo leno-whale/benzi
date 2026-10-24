@@ -51,7 +51,14 @@ function walk(dir, base = "") {
   return out;
 }
 
-const files = walk(process.cwd());
+const files = walk(process.cwd()).filter((f) => {
+  // 推送用的 token 没有 workflow 权限，带 .github/workflows 的树会整棵被拒（404）。
+  if (f.rel.startsWith(".github/workflows/")) {
+    console.log(`⚠ 跳过 ${f.rel}：token 缺 workflow 权限，推不了工作流文件`);
+    return false;
+  }
+  return true;
+});
 const msg = process.argv[2] || "update";
 
 const blobs = [];

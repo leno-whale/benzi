@@ -47,6 +47,20 @@ python test_notebook.py     # 31 项 API 规则 + 11 项真实 stdin 端到端 +
 
 平衡改动请提 issue，别直接改代码 —— 文本、节奏和难度是一件事的三个面。
 
+## 开发
+
+这台机器上 `git push https://github.com/...` 连不上（443 超时），只有 `api.github.com` 通。
+所以本地照常用 git 提交，推上去走脚本：
+
+```
+node tools/push.mjs "提交说明"
+```
+
+它用 git data API 把工作区整个推成一个提交（token 取 `GH_TOKEN` 或 `%USERPROFILE%\.bili-ai\github.json`）。
+`git push` 哪天通了，就换回 `git push origin main`，脚本留着当备胎。
+
+CI 在 `.github/workflows/test.yml`：每次推都跑一遍 `test_notebook.py` 和 `demo.py`。
+
 ## 致谢
 
 测试与修复（B1 开局验页被撕、B2 测试脚本不走回合、启动器缺失）来自一次外部 QA 辅助，
