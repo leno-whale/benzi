@@ -1,4 +1,4 @@
-# 没有编号（no-number）
+# 本子（benzi）
 
 一个只有读本子才能玩下去的文字小游戏。标准库单文件，`python notebook.py` 就能跑。
 
@@ -14,7 +14,7 @@ python notebook.py --debug    # 作弊：站在有原话的屋里会提示
 python notebook.py --plain    # 关掉颜色
 ```
 
-Windows 上双击 `没有编号.bat` 也行（需要 PATH 里有 python）。
+Windows 上双击 `本子游戏.bat` 也行（需要 PATH 里有 python）。
 
 ## 规则
 

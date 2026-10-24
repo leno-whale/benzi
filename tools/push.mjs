@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 
 const owner = "leno-whale";
-const repo = "no-number";
+const repo = "benzi";
 const branch = "main";
 
 function token() {
