@@ -130,12 +130,12 @@ def test_api():
     g = nb.Notebook(seed=5)
     for _ in range(12):
         g.next_round()
-    fakes = [r for k, r in g.log if k == "fake"]
+    fakes = [e[1] for e in g.log if e[0] == "fake"]
     check("伪页在第 3/6/9/12 次醒来出现", fakes == [3, 6, 9, 12], str(fakes))
 
     g = nb.Notebook(seed=6)
     g.next_round()                       # 走到第 2 次醒来
-    check("第 1、2 次醒来没有伪页", g.round == 2 and not [k for k, _ in g.log if k == "fake"])
+    check("第 1、2 次醒来没有伪页", g.round == 2 and not [e for e in g.log if e[0] == "fake"])
 
     g = nb.Notebook(seed=7)
     g.next_round()
@@ -263,9 +263,119 @@ def test_sweep():
     check("扫荡：本子从不超页", size_bad == 0)
 
 
+def _pg(text, real=True, piece=False, ink=3):
+    return {"text": text, "ink": ink, "real": real, "piece": piece}
+
+
+def _blank(seed=1):
+    g = nb.Notebook(seed=seed)
+    g.pages, g.pieces, g.log = [], [], []
+    return g
+
+
+def test_endings():
+    group("七个结局")
+
+    def case_a():
+        g = _blank()
+        g.pages = [_pg(p, piece=True) for p in nb.PIECES]
+        g.pieces = list(nb.PIECES)
+        g.over = "win"
+        g.log = [("write", 2), ("evict", "我写的那句", True, False), ("fake", 3)]
+        g.own_evicted = ["我写的那句"]
+        return g
+
+    def case_b():
+        g = _blank()
+        g.pages = [_pg(p, piece=True) for p in nb.PIECES]
+        g.pieces = list(nb.PIECES)
+        g.over = "win"
+        g.log = [("fake", 3)]
+        return g
+
+    def case_c():
+        g = _blank()
+        g.pages = [_pg("上一轮的句子"), _pg("你已经想清楚了，照着感觉走就对了。", real=False, ink=0),
+                   _pg(nb.PIECES[0], piece=True)]
+        g.pieces = [nb.PIECES[0]]
+        g.pos = (1, 2)
+        g.over = "lose"
+        g.log = [("evict", "旧的", True, False), ("fake", 3)]
+        return g
+
+    def case_d():
+        g = _blank()
+        g.pages = [_pg("我写的"), _pg(nb.PIECES[0], piece=True)]
+        g.pieces = [nb.PIECES[0]]
+        g.pos = (2, 1)
+        g.over = "lose"
+        g.log = [("write", 2), ("fake", 3), ("caught", 2, "本子上的都是你自己写的，不用验。")]
+        return g
+
+    def case_e():
+        g = _blank()
+        g.pages = [_pg(p, piece=True) for p in nb.PIECES]
+        g.pieces = list(nb.PIECES)
+        g.pos = (1, 2)
+        g.over = "lose"
+        g.log = [("fake", 3), ("fake", 6), ("fake", 9), ("fake", 12)]
+        return g
+
+    def case_f():
+        g = case_e()
+        g.pos = (2, 2)
+        g.log = g.log + [("full", 13, "我想留一句自己的话。")]
+        return g
+
+    def case_g():
+        g = _blank()
+        g.pages = [_pg("我写的"), _pg(nb.PIECES[0], piece=True)]
+        g.pieces = [nb.PIECES[0]]
+        g.pos = (1, 0)
+        g.over = "lose"
+        g.log = [("write", 2), ("fake", 3), ("evict", "出口在北边，别再往深处去了。", False, False)]
+        return g
+
+    want = {"A": case_a, "B": case_b, "C": case_c, "D": case_d,
+            "E": case_e, "F": case_f, "G": case_g}
+    for code, make in want.items():
+        g = make()
+        got = g.ending()
+        check(f"结局 {code}（{nb.TITLES[code]}）判得对", got == code, f"实际 {got}")
+        lines = g.ending_text(got)
+        left = [ln for ln in lines if "{" in ln or "}" in ln]
+        check(f"结局 {code} 占位符填干净", not left, str(left[:1]))
+        check(f"结局 {code} 有文本", len(lines) >= 10 and any(lines))
+
+    g = case_a()
+    t = "\n".join(g.ending_text("A"))
+    check("A 引用了自己写的原句", "我写的那句" in t)
+    g = case_c()
+    t = "\n".join(g.ending_text("C"))
+    check("C 引用了那页假话", "照着感觉走" in t)
+    check("C 页码写对", "第 2 页" in t)
+    g = case_c()
+    g.pages = [_pg(nb.PIECES[0], piece=True), _pg("假话", real=False, ink=0)]
+    g.log = [("fake", 3)]
+    t = "\n".join(g.ending_text("C"))
+    check("C 没撕过纸时换成另一句", "一页也没撕过" in t)
+    g = case_f()
+    t = "\n".join(g.ending_text("F"))
+    check("F 引用想写没写进去的那句", "我想留一句自己的话" in t)
+    g = case_d()
+    g.pages = []
+    t = "\n".join(g.ending_text("D"))
+    check("D 本子空着时兜得住", "一页都没给自己留" in t)
+    g = case_g()
+    t = "\n".join(g.ending_text("G"))
+    check("G 引用被挤掉的假话", "出口在北边" in t)
+    check("G 报出你的页数", "1 页是你的字" in t)
+
+
 def main():
     print("本子 自动化测试\n")
     test_api()
+    test_endings()
     test_e2e()
     test_sweep()
     print()
