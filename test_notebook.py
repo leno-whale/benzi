@@ -1,24 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本子 v0.2 —— 自动化测试
+"""本子 v0.4「回执」—— 自动化测试
 
-    python test_notebook.py
+    python test_notebook_v04.py
 
 安静跑完：只报每组通过数，失败项逐条列出。全过退出 0，否则退出 1。
+v0.3.1 的旧语义回归全部保留；新增回执/留话/回声/CLI 组。
+所有临时文件都放本目录下的 `_tmp`（系统 tempfile / mkdtemp 在本沙箱会挂起或 ACL 拒绝）。
 """
+import builtins
 import contextlib
 import importlib.util
 import io
 import itertools
 import os
+import shutil
 import subprocess
 import sys
 from collections import deque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NOTEBOOK = os.path.join(HERE, "notebook.py")
+NOTEBOOK = os.path.join(HERE, "notebook_v04.py")
 if not os.path.exists(NOTEBOOK):
-    NOTEBOOK = os.path.join(HERE, "notebook_v02.py")
+    NOTEBOOK = os.path.join(HERE, "notebook.py")
+TMP_BASE = os.path.join(HERE, "_tmp")
+
+
+def tmpdir(name):
+    """固定父目录 _tmp 下的子目录；不用 mkdtemp/TemporaryDirectory（ACL 坑）。"""
+    os.makedirs(TMP_BASE, exist_ok=True)
+    d = os.path.join(TMP_BASE, name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d, exist_ok=True)
+    return d
 
 _spec = importlib.util.spec_from_file_location("nb", NOTEBOOK)
 nb = importlib.util.module_from_spec(_spec)
@@ -441,14 +455,87 @@ def test_balance():
     check("实跑全程扫荡+抄：页数≤3", len(g.pages) <= nb.PAGES)
 
 
-def _pg(text, real=True, piece=False, ink=3):
-    return {"text": text, "ink": ink, "real": real, "piece": piece}
+def _pg(text, real=True, piece=False, ink=3, echo=False):
+    return {"text": text, "ink": ink, "real": real, "piece": piece, "echo": echo}
 
 
 def _blank(seed=1):
     g = nb.Notebook(seed=seed)
     g.pages, g.pieces, g.log = [], [], []
     return g
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+@contextlib.contextmanager
+def _input(value):
+    """替换 input()：返回 value；若 value 是异常则抛出（模拟 EOF/Ctrl-C）。"""
+    old = builtins.input
+
+    def fake(prompt=""):
+        print(prompt, end="")
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    builtins.input = fake
+    try:
+        yield
+    finally:
+        builtins.input = old
+
+
+def _store(name, *entries):
+    d = tmpdir(name)
+    path = os.path.join(d, "回执.md")
+    st = nb.ReceiptStore(path)
+    for e in entries:
+        if not st.append(e):
+            raise RuntimeError(f"预置回执失败：{path}")
+    return st, path
+
+
+def _entry(leave="上一局的那句话", seed=3, code="B", name="甲"):
+    return nb.make_entry(seed, code, nb.TITLES[code], nb.PIECES[0], leave, name)
+
+
+def _win_game(store=None, seed=3, echo="never"):
+    g = nb.Notebook(seed=seed, receipt=store, echo=echo)
+    g.pages = [_pg(p, piece=True) for p in nb.PIECES]
+    g.pieces = list(nb.PIECES)
+    g.pos = (0, 0)
+    g.over = "win"
+    g.log = [("check", 1)]
+    return g
+
+
+def _route_cmds(seed):
+    """按真实布局算一条最短收纸路线；每进纸房抄，第一次抄完验一页。"""
+    g = nb.Notebook(seed=seed)
+    rooms = list(g.hidden)
+
+    def one(perm):
+        cur, seq = (0, 0), []
+        for r in perm:
+            seq += path_to(cur, r)
+            cur = r
+        return seq + path_to(cur, (0, 0))
+
+    seq = min((one(p) for p in itertools.permutations(rooms)), key=len)
+    cmds, pos, copied = [], (0, 0), set()
+    for d in seq:
+        cmds.append(d)
+        dx, dy = nb.ARROWS[d]
+        pos = (pos[0] + dx, pos[1] + dy)
+        if pos in rooms and pos not in copied:
+            cmds.append("抄")
+            copied.add(pos)
+            if len(copied) == 1:
+                cmds.append("验 2")
+    return cmds
 
 
 def test_endings():
@@ -532,6 +619,7 @@ def test_endings():
     t = "\n".join(g.ending_text("C"))
     check("C 引用了那页假话", "照着感觉走" in t)
     check("C 页码写对", "第 2 页" in t)
+    check("C 普通不承诺「先读到」", "先读到" not in t)
     g = case_c()
     g.pages = [_pg(nb.PIECES[0], piece=True), _pg("假话", real=False, ink=0)]
     g.log = [("fake", 3)]
@@ -550,12 +638,351 @@ def test_endings():
     check("G 报出你的页数", "1 页是你的字" in t)
 
 
+def test_receipt_format():
+    group("回执格式与存储")
+
+    e = nb.make_entry(3, "B", nb.TITLES["B"], "原话\n第二行", "留话\t一句", "甲")
+    check("make_entry 键齐全",
+          set(e) == {"ts", "who", "seed", "code", "title", "quote",
+                     "leave", "note", "version"})
+    check("make_entry 值压成单行",
+          "\n" not in e["quote"] and "\t" not in e["leave"])
+    check("空留话写成没有留话",
+          nb.make_entry(3, "B", "t", "q", "")["leave"] == "没有留话")
+
+    st, path = _store("receipt1")
+    check("append 返回 True", st.append(e) is True)
+    txt = _read(path)
+    check("文件含机器键「批注」", "- 批注：" in txt)
+    check("不再写 note / 我的批注", "note" not in txt and "我的批注" not in txt)
+    check("头部只有一份", txt.count("# 本子 · 回执") == 1)
+    check("条目在头部之后", txt.index("## ") > txt.index("# 本子"))
+    check("没有 .tmp 残留",
+          not any(".tmp." in n for n in os.listdir(os.path.dirname(path))))
+
+    st.append(_entry("第二句", 4, "A", "乙"))
+    txt = _read(path)
+    check("最新条目在上", txt.index("第二句") < txt.index("留话 一句"))
+    st2 = nb.ReceiptStore(path)
+    check("load 出两条", len(st2.load()) == 2)
+    check("latest_line 取最新留话", st2.latest_line() == "第二句")
+
+    # 只有 HEADER、没有旧条目：不能重复写一份头
+    d = tmpdir("receipt_header")
+    p = os.path.join(d, "回执.md")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(nb.HEADER)
+    stx = nb.ReceiptStore(p)
+    check("只有头时 append 成功", stx.append(e) is True)
+    t2 = _read(p)
+    check("只有头时不重复头",
+          t2.count("# 本子 · 回执") == 1 and t2.count("## ") == 1)
+
+    # 坏条目跳过，后面的好条目保留
+    d = tmpdir("receipt_bad")
+    p = os.path.join(d, "回执.md")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(nb.HEADER)
+        f.write("## 坏掉的条目\n\n- 只有一句话\n\n")
+        f.write("## 2026-01-01 00:00 · 丙\n\n- seed：1\n- 结局：A · 压痕\n"
+                "- 原话：q\n- 留话：l\n- 批注：\n- 版本：0.4.0\n\n")
+    st3 = nb.ReceiptStore(p)
+    check("坏条目跳过、好条目保留", len(st3.load()) == 1)
+    check("好条目字段对", st3.entries[0]["code"] == "A" and st3.entries[0]["who"] == "丙")
+
+    # 旧格式「我的批注」兼容，读出为 note
+    d = tmpdir("receipt_old")
+    p = os.path.join(d, "回执.md")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(nb.HEADER)
+        f.write("## 2026-01-01 00:00 · 丁\n\n- seed：2\n- 结局：C · 最好听的那一页\n"
+                "- 原话：q\n- 留话：l\n- 我的批注：旧注\n- 版本：0.3.1\n\n")
+    st4 = nb.ReceiptStore(p)
+    st4.load()
+    check("旧「我的批注」读成 note", st4.entries[0]["note"] == "旧注")
+
+    # 只有「没有留话」的条目：latest_line 为 None
+    st5, _ = _store("receipt_none", _entry("", 5, "B"))
+    check("没有留话时 latest_line=None", st5.latest_line() is None)
+
+    # 写不进去：返回 False、只警告、不抛异常
+    bad = nb.ReceiptStore(os.path.join(tmpdir("receipt_badpath"), "no", "回执.md"))
+    ok, out = quiet(bad.append, e)
+    check("写失败返回 False", ok is False)
+    check("写失败只警告", "没写进去" in out)
+
+
+def test_finish_receipt():
+    group("留话与回执写入")
+
+    st, path = _store("finish1")
+    g = _win_game(st)
+    with _input("我给下一局留一句"):
+        out = quiet(g.finish)[1]
+    txt = _read(path)
+    check("留话写进回执", "留话：我给下一局留一句" in txt)
+    check("结局写对", "结局：B · 三张别人的话" in txt)
+    check("原话取最后一张", f"原话：{nb.PIECES[2]}" in txt)
+    check("版本写对", "版本：0.4.0" in txt)
+    check("名字写对", "· 你" in txt)
+    check("名字最多 20 字", len(nb.make_entry(1, "A", "压痕", "q", "l", "名" * 30)["who"]) == 20)
+    check("只打印文件名，不打绝对路径", "回执.md" in out and path not in out)
+    check("有「下一局会先看到」确认句", "会先看到" in out)
+
+    st2, path2 = _store("finish2")
+    g = _win_game(st2)
+    with _input("字" * 50):
+        quiet(g.finish)
+    stx = nb.ReceiptStore(path2)
+    stx.load()
+    check("留话截到 40 字", len(stx.entries[0]["leave"]) == 40)
+
+    st3, path3 = _store("finish3")
+    g = _win_game(st3)
+    with _input(EOFError()):
+        out = quiet(g.finish)[1]
+    stx = nb.ReceiptStore(path3)
+    stx.load()
+    check("EOF 不留话也写回执", len(stx.entries) == 1)
+    check("EOF 留话记为没有留话", stx.entries[0]["leave"] == "没有留话")
+    check("EOF 有「你没留」", "你没留" in out)
+
+    st4, path4 = _store("finish4")
+    g = _win_game(st4)
+    with _input(KeyboardInterrupt()):
+        quiet(g.finish)
+    check("Ctrl-C 也能写回执", os.path.exists(path4))
+
+    g = _win_game(None)
+    with _input(AssertionError("没有回执却调用了 input")):
+        out = quiet(g.finish)[1]
+    check("无回执不询问", "已写入回执" not in out)
+    check("无回执没有留话段", "（四十字以内" not in out)
+
+    bad = nb.ReceiptStore(os.path.join(tmpdir("finish_bad"), "no", "回执.md"))
+    g = _win_game(bad)
+    with _input("留一句"):
+        out = quiet(g.finish)[1]
+    check("写失败提示不崩", "[回执] 没写进去" in out)
+
+
+def test_echo_page():
+    group("回声页与验回声")
+    LEAVE = "上一局的那句话"
+    st, path = _store("echo1", _entry(LEAVE))
+
+    g = nb.Notebook(seed=3, receipt=st, echo="always")
+    check("回声文本来自最近留话", g.echo_text == LEAVE)
+    check("回声落在 3/6/9/12", g.echo_wake in (3, 6, 9, 12), str(g.echo_wake))
+    check("回声独立随机流不扰动布局",
+          dict(nb.Notebook(seed=7).hidden) == dict(
+              nb.Notebook(seed=7, receipt=nb.ReceiptStore(path), echo="always").hidden))
+
+    g = nb.Notebook(seed=3, receipt=st, echo="always")
+    g.echo_text = LEAVE
+    g.echo_wake = 3
+    g.round = 2
+    quiet(g.next_round)
+    ep = [p for p in g.pages if p.get("echo") is True]
+    check("回声页带 echo=True", len(ep) == 1)
+    check("回声页 real=False、ink=0",
+          ep and ep[0]["real"] is False and ep[0]["ink"] == 0)
+    check("回声页文本就是留话", ep and ep[0]["text"] == LEAVE)
+    check("回声替写日志是三元组", ("fake", 3, "echo") in g.log)
+
+    idx = g.pages.index(ep[0]) + 1
+    g.pos = (2, 2)
+    ok, out = quiet(g.verify, idx)
+    check("验回声：成功并撕掉", ok is True and not any(p.get("echo") for p in g.pages))
+    check("验回声：caught 四元组", ("caught", idx, LEAVE, "echo") in g.log)
+    check("echo_caught 为 True", g.echo_caught is True)
+    check("验回声文案：门缝/上一局/别人",
+          "门缝" in out and "上一局" in out and "别人" in out)
+
+    # 普通假页：日志仍是 3 元组，echo_caught 为 False
+    g2 = nb.Notebook(seed=3, receipt=None, echo="never")
+    g2.round = 2
+    quiet(g2.next_round)
+    fi = next(i for i, p in enumerate(g2.pages, 1) if not p["real"])
+    quiet(g2.verify, fi)
+    check("普通假页 caught 仍是 3 元组",
+          any(e[0] == "caught" and len(e) == 3 for e in g2.log))
+    check("普通假页 echo_caught=False", g2.echo_caught is False)
+
+    check("echo=never 不读回声",
+          nb.Notebook(seed=3, receipt=st, echo="never").echo_text is None)
+
+    ga = nb.Notebook(seed=3, receipt=st, echo="auto")
+    check("auto 要么不回声、要么落在 3/6/9/12",
+          ga.echo_wake is None or ga.echo_wake in (3, 6, 9, 12))
+    check("auto 决定回声时文本存在",
+          ga.echo_wake is None or ga.echo_text == LEAVE)
+
+    # 一整局 12 次醒来：正好 4 张替写页，其中 1 张回声
+    g5 = nb.Notebook(seed=3, receipt=st, echo="always")
+    g5.echo_text = LEAVE
+    g5.echo_wake = 12
+    for _ in range(11):
+        quiet(g5.next_round)
+    fakes = [e for e in g5.log if e[0] == "fake"]
+    check("回声局替写仍是 4 页", len(fakes) == 4, str(fakes))
+    check("其中一张是 echo 三元组",
+          sum(1 for e in fakes if len(e) == 3) == 1)
+    check("第 12 次回声页在本子上",
+          any(p.get("echo") is True for p in g5.pages))
+    check("回声页仍不计 pieces", g5.pieces == [])
+
+    # C 变体：回声页留在本子上
+    g5.over = "lose"
+    g5.round = nb.WAKES + 1
+    txt = "\n".join(g5.ending_text("C"))
+    check("C 变体选回声页", "门缝" in txt and LEAVE in txt)
+    check("C 变体不重复普通结尾", "沙发上的坑早就凉了" not in txt)
+    check("C 变体不改 C 判定", g5.ending() == "C")
+
+    # C 普通：回声已经撕掉
+    g6 = _blank()
+    g6.pages = [_pg("普通假话", real=False, ink=0), _pg(nb.PIECES[0], piece=True)]
+    g6.pieces = [nb.PIECES[0]]
+    g6.pos = (1, 2)
+    g6.over = "lose"
+    g6.log = [("caught", 2, LEAVE, "echo")]
+    t6 = "\n".join(g6.ending_text("C"))
+    check("回声已撕：C 回普通文案", "门缝" not in t6)
+    check("回声已撕：C 仍引用普通假页", "普通假话" in t6)
+
+    # 普通假页 + 回声页同时存在：优先回声页
+    g7 = _blank()
+    g7.pages = [_pg("普通假话", real=False, ink=0),
+                _pg(LEAVE, real=False, ink=0, echo=True)]
+    g7.over = "lose"
+    g7.round = nb.WAKES + 1
+    t7 = "\n".join(g7.ending_text("C"))
+    check("C 优先选回声页", "第 2 页" in t7 and LEAVE in t7)
+
+    # A/B coda 只在验到回声时追加
+    g8 = _win_game(None)
+    g8.log = [("caught", 2, LEAVE, "echo")]
+    out8 = quiet(g8.finish)[1]
+    check("A/B coda：验到回声才追加", "门缝里塞着一叠纸" in out8)
+    g9 = _win_game(None)
+    out9 = quiet(g9.finish)[1]
+    check("A/B coda：没验到不追加", "门缝里塞着一叠纸" not in out9)
+
+
+def test_door_slot():
+    group("门缝与看")
+
+    LEAVE = "上一局的那句话"
+    st, _ = _store("door1", _entry(LEAVE))
+    g = nb.Notebook(seed=3, receipt=st, echo="never")
+    g.pos = (1, 2)
+    ok, out = quiet(g.move, "e")
+    check("首次到后门：显示门缝", ok and "门缝" in out)
+    check("首次到后门：显示留话", LEAVE in out)
+    check("receipt_seen 置位", g.receipt_seen is True)
+
+    quiet(g.move, "w")
+    ok, out = quiet(g.move, "e")
+    check("第二次到后门：不重复", "门缝" not in out)
+
+    st2, _ = _store("door_empty")
+    g2 = nb.Notebook(seed=3, receipt=st2, echo="never")
+    g2.pos = (1, 2)
+    ok, out = quiet(g2.move, "e")
+    check("空回执显示「空着」", "空着" in out)
+
+    g3 = nb.Notebook(seed=3)
+    g3.pos = (1, 2)
+    ok, out = quiet(g3.move, "e")
+    check("默认无回执不显示门缝", "门缝" not in out)
+    check("默认无回执 receipt_seen 不置位", g3.receipt_seen is False)
+
+    g4 = nb.Notebook(seed=3, receipt=st, echo="never")
+    g4.pos = (2, 2)
+    out = quiet(g4.show, True)[1]
+    check("看本子背面：后门可重读留话", LEAVE in out)
+
+    out = quiet(g4.show, False)[1]
+    check("普通「看」不读门缝", LEAVE not in out)
+
+
+def test_cli():
+    group("命令行与默认关闭")
+
+    g = nb.Notebook(seed=1)
+    check("默认 receipt=None", g.receipt is None)
+    check("默认不读回声", g.echo_text is None and g.echo_wake is None)
+
+    d = tmpdir("cli")
+    rp = os.path.join(d, "回执.md")
+    cmds = _route_cmds(3) + ["下局别抄我的"]
+    r = run(["--plain", "--seed", "3", "--receipt", rp, "--name", "乙"],
+            "\n".join(cmds) + "\n")
+    check("--receipt 非 TTY 也写", r.returncode == 0 and os.path.exists(rp))
+    txt = _read(rp)
+    check("CLI 回执含留话", "留话：下局别抄我的" in txt)
+    check("CLI 回执含 name", "· 乙" in txt)
+    check("CLI 输出不打绝对路径", rp not in r.stdout and "回执.md" in r.stdout)
+
+    rp2 = os.path.join(d, "不应存在.md")
+    r = run(["--plain", "--seed", "3", "--no-receipt", "--receipt", rp2],
+            "\n".join(cmds) + "\n")
+    check("--no-receipt 优先", r.returncode == 0 and not os.path.exists(rp2))
+
+    r = run(["--plain", "--seed", "1", "--receipt"], "退\n")
+    check("--receipt 缺路径不崩、不开回执", r.returncode == 0)
+
+    r = run(["--plain", "--version"], "")
+    check("--version 打印 0.4.0", r.returncode == 0 and "0.4.0" in r.stdout)
+
+    # 在进程内测 TTY 默认：替换 sys.stdin 与 Notebook，只检查传参
+    class FakeIn:
+        def isatty(self):
+            return True
+
+    class Dummy:
+        last = None
+
+        def __init__(self, **kw):
+            Dummy.last = kw
+
+        def play(self):
+            pass
+
+    old_nb, old_stdin = nb.Notebook, nb.sys.stdin
+    try:
+        nb.Notebook = Dummy
+        nb.sys.stdin = FakeIn()
+        nb.main([])
+        check("TTY 默认开回执",
+              Dummy.last["receipt"] is not None
+              and Dummy.last["receipt"].path == nb.DEFAULT_PATH)
+        nb.main(["--no-receipt"])
+        check("TTY --no-receipt 关闭",
+              Dummy.last["receipt"] is None and Dummy.last["echo"] == "never")
+        nb.main(["--receipt", rp, "--name", "甲", "--echo", "always", "--seed", "7"])
+        check("显式 --receipt 优先",
+              Dummy.last["receipt"].path == rp and Dummy.last["name"] == "甲")
+        check("--echo/--seed 传入",
+              Dummy.last["echo"] == "always" and Dummy.last["seed"] == 7)
+        nb.main(["--echo", "bogus"])
+        check("非法 --echo 回 auto", Dummy.last["echo"] == "auto")
+    finally:
+        nb.Notebook, nb.sys.stdin = old_nb, old_stdin
+
+
 def main():
     print("本子 自动化测试\n")
     test_api()
     test_endings()
     test_e2e()
     test_balance()
+    test_receipt_format()
+    test_finish_receipt()
+    test_echo_page()
+    test_door_slot()
+    test_cli()
     print()
     for title, total, passed in GROUPS:
         print(f"  {title}：{passed}/{total}")

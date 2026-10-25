@@ -38,3 +38,18 @@
     动作按行喂给 stdin 就行，比如  Get-Content 路线.txt | python notebook.py
     （写中文路径的终端记得 chcp 65001）
 
+留话（v0.4 才有）：
+    一局结束，本子会问你想留一句话（40 字内，可以留空）。
+    那句话不会进入下一局的门，它进的是「门缝」—— 下一局的替写者偶尔
+    （默认一半的机会）把它抄进你的本子，当成一页。
+    你要是验到那一页，会看见一页不是假话的东西：别人的话，没经你同意进了你的本子。
+
+    python notebook.py --receipt .\回执.md      指定留话存在哪（默认 回执.md）
+    python notebook.py --no-receipt             这一局不写回执、也不问
+    python notebook.py --name 小鱼              留话时署这个名（20 字内）
+    python notebook.py --echo never             别的鱼留给你的话，这一局别抄进来
+    python notebook.py --echo always            一局一个都不许错过（debug 用）
+
+    回执是给人看的：贴在群里、发给朋友、「我玩到这局是这样」。
+    它不是存档 —— 存档能让你回来，回执只能让别人知道你走过一趟。
+

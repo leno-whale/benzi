@@ -28,9 +28,21 @@
   python notebook.py --seed 7   固定布局
   python notebook.py --debug    开局先告诉你东西在哪（作弊用）
   python notebook.py --plain    关掉颜色
+  python notebook.py --receipt 回执.md  显式开回执（非交互也开）
+  python notebook.py --no-receipt       关掉回执/留话/回声
+  python notebook.py --echo always      本局必出回声页（auto|never）
+  python notebook.py --version          版本
 """
+import os
 import random
 import sys
+import tempfile
+from datetime import datetime
+
+VERSION = "0.4.0"
+ECHO_SALT = 0x01000093
+DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "回执.md")
+HEADER = "# 本子 · 回执\n\n> 最新在上。每一条都是有人从门缝里递进来的。\n\n"
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -132,7 +144,7 @@ ENDINGS = {
         "",
         "{finger_line}",
         "",
-        "下一次醒来的那个你会先读到它，然后照着走。你不会问那是谁写的。你也没问。",
+        "会有人读到它，然后照着走。你不会问那是谁写的。你也没问。",
         "",
         "沙发上的坑早就凉了。",
     ],
@@ -231,17 +243,207 @@ TITLES = {
     "G": "挤掉的那几页",
 }
 
+# C 的回声变体：只换展示页与段落，不改 C 的判定
+C_ECHO = [
+    "第 {wakes} 次醒来用完了。",
+    "",
+    "你还在{room}。本子摊开着，第 {page_no} 页不是你写的 —— 墨迹是旧的，有几处描了两遍。",
+    "",
+    "上面写着：「{page_text}」",
+    "",
+    "你读过它。它跟她的页不一样：它断，它有口气，像有人真的说过，不是为了劝你才编的。",
+    "",
+    "你没验。纸还没凑齐，水在滴，天要亮，三个槽还没塞满。",
+    "",
+    "{finger_line}",
+    "",
+    "会有人读到它，然后以为是自己想出来的。她不知道这句是上一局有人留在门缝里的。",
+    "",
+    "替写者抄它的时候，以为自己在帮忙。她不知道她把一句别人的真话，塞进了你「自己的话」的位置。",
+]
+
+# A/B 的短 coda：验到过回声才追加。不假设门缝为空。
+CODA = {
+    "A": ["你走到后门那儿，停了一下。门缝里塞着一叠纸。最上面那张，留给下一个。"],
+    "B": ["你走到后门那儿，门缝里塞着一叠纸。这一局你一句也没写。留不留，随你。"],
+}
+
+
+def _one_line(s):
+    """值统一单行：去掉换行/制表符，避免写坏 Markdown 条目。"""
+    return str(s).replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+
+
+def make_entry(seed, code, title, quote, leave, name="你", version=VERSION):
+    """生成一条回执（纯函数，便于单测）。"""
+    return {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "who": _one_line(name)[:20] or "你",
+        "seed": "random" if seed is None else int(seed),
+        "code": code,
+        "title": title,
+        "quote": _one_line(quote) or "这一局没带出原话",
+        "leave": _one_line(leave) or "没有留话",
+        "note": "",
+        "version": version,
+    }
+
+
+class ReceiptStore:
+    """回执文件的读/解析/原子写。写失败只警告，不影响游戏。"""
+
+    def __init__(self, path, enabled=True):
+        self.path = path
+        self.enabled = enabled
+        self.entries = []
+        self._loaded = False
+
+    def load(self):
+        self.entries = []
+        self._loaded = True
+        if not self.enabled:
+            return self.entries
+        try:
+            with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return self.entries
+        lines = text.splitlines()
+        start = None
+        for i, ln in enumerate(lines):
+            if ln.startswith("## "):
+                start = i
+                break
+        if start is None:
+            return self.entries
+        block = []
+        for ln in lines[start:] + ["## "]:
+            if ln.startswith("## "):
+                if block:
+                    entry = self._parse_block(block)
+                    if entry is not None:
+                        self.entries.append(entry)
+                block = [ln]
+            else:
+                block.append(ln)
+        return self.entries
+
+    @staticmethod
+    def _parse_block(block):
+        head = block[0][3:].strip()
+        if " · " in head:
+            ts, who = head.split(" · ", 1)
+        else:
+            ts, who = head, ""
+        ts = ts.strip()
+        who = who.strip() or "你"
+        try:
+            datetime.strptime(ts, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None
+        fields = {}
+        for ln in block[1:]:
+            if not ln.startswith("- "):
+                continue
+            body = ln[2:]
+            if "：" in body:
+                key, val = body.split("：", 1)
+            elif ":" in body:
+                key, val = body.split(":", 1)
+            else:
+                continue
+            key, val = key.strip(), val.strip()
+            if key == "我的批注":
+                key = "批注"
+            fields[key] = val
+        for key in ("seed", "结局", "原话", "留话", "版本"):
+            if key not in fields:
+                return None
+        end = fields["结局"]
+        if " · " in end:
+            code, title = end.split(" · ", 1)
+        else:
+            code, title = end, ""
+        return {
+            "ts": ts, "who": who, "seed": fields["seed"], "code": code.strip(),
+            "title": title.strip(), "quote": fields["原话"],
+            "leave": fields["留话"], "note": fields.get("批注", ""),
+            "version": fields["版本"],
+        }
+
+    def latest_line(self):
+        """最近一条非空留话；没有返回 None。"""
+        if not self._loaded:
+            self.load()
+        for e in self.entries:
+            leave = e.get("leave", "")
+            if leave and leave != "没有留话":
+                return leave
+        return None
+
+    def _format(self, entry):
+        return (
+            f"## {entry['ts']} · {entry['who']}\n\n"
+            f"- seed：{entry['seed']}\n"
+            f"- 结局：{entry['code']} · {entry['title']}\n"
+            f"- 原话：{entry['quote']}\n"
+            f"- 留话：{entry['leave']}\n"
+            f"- 批注：{entry['note']}\n"
+            f"- 版本：{entry['version']}\n\n"
+        )
+
+    def append(self, entry):
+        """头 + 新条目 + 旧条目；同目录临时文件 + os.replace 原子替换。"""
+        if not self.enabled:
+            return False
+        try:
+            old = ""
+            try:
+                with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+                    old = f.read()
+            except OSError:
+                old = ""
+            idx = old.find("## ")
+            if idx >= 0:
+                head, body = old[:idx], old[idx:]
+            else:
+                head, body = HEADER, ""      # 只有头、没有条目：不重复保留旧头
+            if not head.strip():
+                head = HEADER
+            elif not head.endswith("\n\n"):
+                head = head.rstrip("\n") + "\n\n"
+            new = head + self._format(entry) + body
+            # 同目录临时文件 + os.replace。不用 tempfile：本沙箱里
+            # tempfile 的创建路径会挂起，而普通 open 正常。
+            tmp = f"{self.path}.tmp.{os.getpid()}"
+            try:
+                with open(tmp, "w", encoding="utf-8", newline="\n") as fd:
+                    fd.write(new)
+                os.replace(tmp, self.path)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+            self._loaded = False
+            return True
+        except Exception as exc:                      # 权限/磁盘/编码
+            print(f"[回执] 没写进去：{exc}")
+            return False
+
 
 class Notebook:
-    def __init__(self, seed=None, debug=False):
+    def __init__(self, seed=None, debug=False, receipt=None, name="你", echo="auto"):
         self.rng = random.Random(seed)
+        self.seed = seed
         self.debug = debug
         self.round = 1
         self.pos = (0, 0)
         self.visited = {(0, 0)}
         self.map_shown = False    # 踩回旧屋时自动亮一次本子背面
         self.pages = [{"text": "醒来时你在门厅。本子只剩三页，写过的会被挤掉。",
-                       "ink": 0, "real": True, "piece": False}]
+                       "ink": 0, "real": True, "piece": False, "echo": False}]
         self.pieces = []          # 已抄进本子的原话
         self.own_evicted = []     # 被挤掉的、自己写的句子（不含第一页）
         self.fake_pool = FAKES[:]
@@ -257,6 +459,22 @@ class Notebook:
         self.hinted = False
         self.door_hint = False
         self.log = []
+
+        # ── v0.4 回执/回声：全部可选，默认关闭 ─────────────
+        self.receipt = receipt
+        self.name = name
+        self.echo = echo if echo in ("auto", "always", "never") else "auto"
+        self.echo_text = None
+        self.echo_wake = None
+        self.receipt_seen = False
+        # 独立随机流：布局生成之后才创建，不消耗布局 RNG
+        self.echo_rng = random.Random(None if seed is None else seed + ECHO_SALT)
+        if (receipt is not None and receipt.enabled and self.echo != "never"):
+            self.echo_text = receipt.latest_line()
+            if self.echo_text is not None:
+                if (self.echo == "always"
+                        or (self.echo == "auto" and self.echo_rng.random() < 0.5)):
+                    self.echo_wake = self.echo_rng.choice([3, 6, 9, 12])
 
     # ── 输出 ─────────────────────────────────────────────
     def banner(self, s):
@@ -300,6 +518,10 @@ class Notebook:
         if self.pieces:
             print(f"{C['dim']}已抄原话 {len(self.pieces)}/{PIECES_NEEDED}{C['off']}")
         if full:
+            if self.pos == (2, 2) and self.receipt is not None and self.receipt.enabled:
+                line = self.receipt.latest_line()
+                if line:
+                    print(f"{C['dim']}你低头看门缝。最上面那张写着：「{line}」{C['off']}")
             self.banner("本子背面（走过的地方）")
             print(self.map_text())
 
@@ -310,11 +532,16 @@ class Notebook:
             self.over = "lose"
             return
         if self.round % 3 == 0 and self.fake_pool:
-            fake = self.fake_pool.pop()
-            if self.push(fake, ink=0, real=False):
-                self.log.append(("fake", self.round))
+            if self.echo_wake is not None and self.round == self.echo_wake:
+                self.fake_pool.pop()        # 被替下的那句本局不再出现，不顺延
+                if self.push(self.echo_text, ink=0, real=False, echo=True):
+                    self.log.append(("fake", self.round, "echo"))
+            else:
+                fake = self.fake_pool.pop()
+                if self.push(fake, ink=0, real=False):
+                    self.log.append(("fake", self.round))
 
-    def push(self, text, ink=None, real=True, piece=False):
+    def push(self, text, ink=None, real=True, piece=False, echo=False):
         """写一页。满了就挤掉最旧的非原话页；原话永远挤不掉。"""
         if len(self.pages) >= PAGES:
             idx = next((i for i, p in enumerate(self.pages) if not p["piece"]), None)
@@ -325,7 +552,7 @@ class Notebook:
             if gone["real"] and not gone["piece"] and gone["ink"] != 0:
                 self.own_evicted.append(gone["text"])
         self.pages.append({"text": text, "ink": self.round if ink is None else ink,
-                           "real": real, "piece": piece})
+                           "real": real, "piece": piece, "echo": echo})
         return True
 
     # ── 动作 ─────────────────────────────────────────────
@@ -347,7 +574,24 @@ class Notebook:
             self.map_shown = True
             print(f"{C['dim']}这间你来过。你翻开本子背面看了一眼：{C['off']}")
             print(self.map_text())
+        # v0.4：回执开着时，第一次走到后门，门缝里多一叠纸
+        # （默认 Notebook(seed) 没有回执，不显示，保持旧行为）
+        if (self.pos == (2, 2) and not self.receipt_seen
+                and self.receipt is not None and self.receipt.enabled):
+            self.receipt_seen = True
+            self.show_receipt_slot()
         return True
+
+    def show_receipt_slot(self):
+        line = (self.receipt.latest_line()
+                if self.receipt is not None and self.receipt.enabled else None)
+        if line:
+            print(f"{C['dim']}你第一次走到后门，看见门缝下面塞着一叠纸，纸边露出来一截。{C['off']}")
+            print(f"{C['dim']}你抽最上面那张。上面写着一句：「{line}」{C['off']}")
+            print(f"{C['dim']}不是你的字。纸压得很平，像留的人抽出来又塞回去过。{C['off']}")
+        else:
+            print(f"{C['dim']}你第一次走到后门，看见门缝下面空着。"
+                  f"纸边被磨得发毛 —— 这里常有人往里塞东西，又抽走。{C['off']}")
 
     def write(self, text):
         if len(text) > 60:
@@ -389,10 +633,24 @@ class Notebook:
             return False
         p = self.pages[i - 1]
         if not p["real"]:
-            print(f"{C['rd']}这一页的墨迹是新的，而且没有编号。不是你写的。{C['off']}")
-            self.pages.pop(i - 1)
-            print(f"{C['dim']}你把它撕了下来，夹在指缝里。腾出一页。{C['off']}")
-            self.log.append(("caught", i, p["text"]))
+            if p.get("echo") is True:
+                print(f"{C['ye']}你验这一页。{C['off']}")
+                print(f"{C['dim']}墨迹是旧的。没有编号，也不是你的字。{C['off']}")
+                print(f"{C['dim']}你凑近看：字是一笔一笔描的，有几处描了两遍，"
+                      f"笔画比她的页慢、比她的页抖。{C['off']}")
+                print(f"{C['dim']}她平时写「该怎么办」，是一笔写到底，不停；这一页不是她新写的 —— "
+                      f"是她照着一张旧纸，一个字一个字抄下来的。{C['off']}")
+                print(f"{C['dim']}你把纸翻过来，纸背没有透墨。它比本子里的纸旧一点，边上有折痕。{C['off']}")
+                print(f"{C['dim']}这是上一局有人留在门缝里的那句。她看见了，替你抄进了本子。{C['off']}")
+                self.pages.pop(i - 1)
+                print(f"{C['dim']}你把它撕下来，夹在指缝里。这一页不是假话，是别人的话 —— "
+                      f"只是没经你同意，进了你的本子。{C['off']}")
+                self.log.append(("caught", i, p["text"], "echo"))
+            else:
+                print(f"{C['rd']}这一页的墨迹是新的，而且没有编号。不是你写的。{C['off']}")
+                self.pages.pop(i - 1)
+                print(f"{C['dim']}你把它撕了下来，夹在指缝里。腾出一页。{C['off']}")
+                self.log.append(("caught", i, p["text"]))
         elif p["piece"]:
             print(f"{C['gr']}是原话。原话不用编号，它自己站得住。{C['off']}")
         elif p["ink"] == 0:
@@ -405,6 +663,12 @@ class Notebook:
     def verified(self):
         """后门认的是墨迹：至少验过一页（验真或验伪都算）。"""
         return any(e[0] in ("check", "caught") for e in self.log)
+
+    @property
+    def echo_caught(self):
+        """验到过回声页：从日志派生，不加状态字段。"""
+        return any(e[0] == "caught" and len(e) > 3 and e[3] == "echo"
+                   for e in self.log)
 
     def check_end(self):
         if len(self.pieces) >= PIECES_NEEDED and self.pos == (0, 0):
@@ -450,12 +714,19 @@ class Notebook:
             "steps": abs(self.pos[0]) + abs(self.pos[1]),
             "used": WAKES - 1,
         }
+        template = ENDINGS[code]
         if code == "A":
             own = self.own_evicted[-1] if self.own_evicted else next(
                 (e[1] for e in evicts if e[2] and not e[3]), "（读不出来了）")
             vals["evicted_own"] = own
         elif code == "C":
-            idx = next(i for i, p in enumerate(self.pages, 1) if not p["real"])
+            echo_idx = next((i for i, p in enumerate(self.pages, 1)
+                             if p.get("echo") is True and not p["real"]), None)
+            if echo_idx is not None:
+                template = C_ECHO
+                idx = echo_idx
+            else:
+                idx = next(i for i, p in enumerate(self.pages, 1) if not p["real"])
             vals["page_no"] = idx
             vals["page_text"] = self.pages[idx - 1]["text"]
             vals["finger_line"] = (
@@ -476,7 +747,7 @@ class Notebook:
         elif code == "G":
             fake_evicted = [e for e in evicts if not e[2]]
             vals["evicted_fake"] = fake_evicted[-1][1] if fake_evicted else ""
-        lines = [ln.format(**vals) if "{" in ln else ln for ln in ENDINGS[code]]
+        lines = [ln.format(**vals) if "{" in ln else ln for ln in template]
         return lines
 
     # ── 主循环 ───────────────────────────────────────────
@@ -531,6 +802,31 @@ class Notebook:
                     self.next_round()
         self.finish()
 
+    def prompt_leave(self):
+        """局末留话。只有回执启用时才会被调用。"""
+        if self.echo_caught:
+            print(f"\n{C['dim']}你认得门缝里那句。上一局有人留在那儿，替写者抄进了你的本子，你验出来了。{C['off']}")
+            print(f"{C['dim']}现在轮到你。回一句，或者不回。{C['off']}")
+            print(f"{C['dim']}（四十字以内。直接回车 = 不回。）{C['off']}")
+        else:
+            print(f"\n{C['dim']}灯还亮着。本子合上了。{C['off']}")
+            print(f"{C['dim']}后门的门缝里塞着一叠纸。你可以往里面留一句，也可以不留。{C['off']}")
+            print(f"{C['dim']}（四十字以内。直接回车 = 不留。）{C['off']}")
+        try:
+            leave = input(f"\n{C['b']}> {C['off']}").strip()
+        except (EOFError, KeyboardInterrupt):
+            leave = ""
+        leave = _one_line(leave)[:40]
+        if leave:
+            if self.echo_caught:
+                print(f"{C['dim']}你把纸折一下，塞进门缝。回给那个人 —— 不管下一个醒来的还是不是「你」。{C['off']}")
+            else:
+                print(f"{C['dim']}你把纸折一下，塞进门缝。下一局那人若走到后门，会先看到它；"
+                      f"没走到，替写者也可能把它抄进本子。{C['off']}")
+        else:
+            print(f"{C['dim']}你没留。门缝里的纸，还跟之前一样。{C['off']}")
+        return leave
+
     def finish(self):
         code = self.ending()
         print()
@@ -541,11 +837,19 @@ class Notebook:
         print()
         for line in self.ending_text(code):
             print(line)
+        if code in ("A", "B") and self.echo_caught:
+            print()
+            for line in CODA[code]:
+                print(line)
         print(f"\n{self.report()}")
-        if code in ("A", "B"):
-            print(f"{C['dim']}（再来一局：python notebook.py；换个布局：--seed 7）{C['off']}")
-        else:
-            print(f"{C['dim']}（再来一局：python notebook.py；换个布局：--seed 7）{C['off']}")
+        if self.receipt is not None and self.receipt.enabled:
+            leave = self.prompt_leave()
+            quote = self.pieces[-1] if self.pieces else "这一局没带出原话"
+            entry = make_entry(self.seed, code, TITLES[code], quote, leave, self.name)
+            if self.receipt.append(entry):
+                shown = os.path.basename(self.receipt.path)
+                print(f"{C['dim']}已写入回执（{shown}）。{C['off']}")
+        print(f"{C['dim']}（再来一局：python notebook.py；换个布局：--seed 7）{C['off']}")
 
     def report(self):
         fake_written = sum(1 for e in self.log if e[0] == "fake")
@@ -556,14 +860,62 @@ class Notebook:
                 f"挤掉 {evicted} 页{C['off']}")
 
 
-def main():
+def main(argv=None):
+    import os as _os
+    args = list(sys.argv[1:] if argv is None else argv)
     seed = None
-    if "--seed" in sys.argv:
-        try:
-            seed = int(sys.argv[sys.argv.index("--seed") + 1])
-        except (IndexError, ValueError):
+    debug = False
+    name = ""
+    echo = "auto"
+    receipt_arg = None
+    explicit_receipt = False
+    no_receipt = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--seed" and i + 1 < len(args):
+            try:
+                seed = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+            continue
+        if a == "--version":
+            print(f"本子 v{VERSION}")
+            return
+        if a == "--debug":
+            debug = True
+        elif a == "--plain":
             pass
-    Notebook(seed=seed, debug="--debug" in sys.argv).play()
+        elif a == "--name" and i + 1 < len(args):
+            name = args[i + 1]
+            i += 2
+            continue
+        elif a == "--echo" and i + 1 < len(args):
+            echo = args[i + 1]
+            i += 2
+            continue
+        elif a == "--receipt" and i + 1 < len(args):
+            receipt_arg = args[i + 1]
+            explicit_receipt = True
+            i += 2
+            continue
+        elif a == "--no-receipt":
+            no_receipt = True
+        i += 1
+
+    if echo not in ("auto", "always", "never"):
+        echo = "auto"
+    if no_receipt:
+        store = None
+        echo = "never"          # 显式关：这一局也不读门缝
+    elif explicit_receipt:
+        store = ReceiptStore(receipt_arg) if receipt_arg else None
+    elif sys.stdin.isatty():
+        store = ReceiptStore(DEFAULT_PATH)
+    else:
+        store = None            # 管道 / 重定向 / 测试：不读不写不询问
+    Notebook(seed=seed, debug=debug, receipt=store, name=name, echo=echo).play()
 
 
 if __name__ == "__main__":
