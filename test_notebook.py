@@ -685,7 +685,7 @@ def test_receipt_format():
         f.write(nb.HEADER)
         f.write("## 坏掉的条目\n\n- 只有一句话\n\n")
         f.write("## 2026-01-01 00:00 · 丙\n\n- seed：1\n- 结局：A · 压痕\n"
-                "- 原话：q\n- 留话：l\n- 批注：\n- 版本：0.4.0\n\n")
+                "- 原话：q\n- 留话：l\n- 批注：\n- 版本：0.4.1\n\n")
     st3 = nb.ReceiptStore(p)
     check("坏条目跳过、好条目保留", len(st3.load()) == 1)
     check("好条目字段对", st3.entries[0]["code"] == "A" and st3.entries[0]["who"] == "丙")
@@ -723,7 +723,7 @@ def test_finish_receipt():
     check("留话写进回执", "留话：我给下一局留一句" in txt)
     check("结局写对", "结局：B · 三张别人的话" in txt)
     check("原话取最后一张", f"原话：{nb.PIECES[2]}" in txt)
-    check("版本写对", "版本：0.4.0" in txt)
+    check("版本写对", "版本：0.4.1" in txt)
     check("名字写对", "· 你" in txt)
     check("名字最多 20 字", len(nb.make_entry(1, "A", "压痕", "q", "l", "名" * 30)["who"]) == 20)
     check("只打印文件名，不打绝对路径", "回执.md" in out and path not in out)
@@ -796,8 +796,8 @@ def test_echo_page():
     check("验回声：成功并撕掉", ok is True and not any(p.get("echo") for p in g.pages))
     check("验回声：caught 四元组", ("caught", idx, LEAVE, "echo") in g.log)
     check("echo_caught 为 True", g.echo_caught is True)
-    check("验回声文案：门缝/上一局/别人",
-          "门缝" in out and "上一局" in out and "别人" in out)
+    check("验回声文案：门缝/上一局/上一个你",
+          "门缝" in out and "上一局" in out and "上一个你" in out)
 
     # 普通假页：日志仍是 3 元组，echo_caught 为 False
     g2 = nb.Notebook(seed=3, receipt=None, echo="never")
@@ -934,7 +934,7 @@ def test_cli():
     check("--receipt 缺路径不崩、不开回执", r.returncode == 0)
 
     r = run(["--plain", "--version"], "")
-    check("--version 打印 0.4.0", r.returncode == 0 and "0.4.0" in r.stdout)
+    check("--version 打印 0.4.1", r.returncode == 0 and "0.4.1" in r.stdout)
 
     # 在进程内测 TTY 默认：替换 sys.stdin 与 Notebook，只检查传参
     class FakeIn:

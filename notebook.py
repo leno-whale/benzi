@@ -39,7 +39,7 @@ import sys
 import tempfile
 from datetime import datetime
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 ECHO_SALT = 0x01000093
 DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "回执.md")
 HEADER = "# 本子 · 回执\n\n> 最新在上。每一条都是有人从门缝里递进来的。\n\n"
@@ -257,9 +257,9 @@ C_ECHO = [
     "",
     "{finger_line}",
     "",
-    "会有人读到它，然后以为是自己想出来的。她不知道这句是上一局有人留在门缝里的。",
+    "会有人读到它，然后以为是自己想出来的。她不知道这句是上一个你留在门缝里的。",
     "",
-    "替写者抄它的时候，以为自己在帮忙。她不知道她把一句别人的真话，塞进了你「自己的话」的位置。",
+    "替写者抄它的时候，以为自己在帮忙。她不知道她把一句上一个你的真话，塞进了你「自己的话」的位置。",
 ]
 
 # A/B 的短 coda：验到过回声才追加。不假设门缝为空。
@@ -274,7 +274,7 @@ def _one_line(s):
     return str(s).replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
 
 
-def make_entry(seed, code, title, quote, leave, name="你", version=VERSION):
+def make_entry(seed, code, title, quote, leave, name="你", version=VERSION, note=""):
     """生成一条回执（纯函数，便于单测）。"""
     return {
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -284,7 +284,7 @@ def make_entry(seed, code, title, quote, leave, name="你", version=VERSION):
         "title": title,
         "quote": _one_line(quote) or "这一局没带出原话",
         "leave": _one_line(leave) or "没有留话",
-        "note": "",
+        "note": _one_line(note),
         "version": version,
     }
 
@@ -459,6 +459,12 @@ class Notebook:
         self.hinted = False
         self.door_hint = False
         self.log = []
+        # v0.4.1 埋点：门不需要「被使用率」这个词，但要三个数分开记。
+        # 起因 xi-abyss 2026-10-25：「有人路过、没人带走」比「没人路过」更糟——
+        # 前者说明门的位置错了，后者只说明门槛高。合成一个数就分不出来。
+        self.door_reached = 0   # 走到过后门
+        self.door_letter = 0    # 门缝里真有纸（有留话可读）
+        self.door_read = 0      # 那句纸被真的读到（抽出来 / 验到回声页）
 
         # ── v0.4 回执/回声：全部可选，默认关闭 ─────────────
         self.receipt = receipt
@@ -576,6 +582,11 @@ class Notebook:
             print(self.map_text())
         # v0.4：回执开着时，第一次走到后门，门缝里多一叠纸
         # （默认 Notebook(seed) 没有回执，不显示，保持旧行为）
+        # v0.4.1：第一次走到后门就记一笔，跟有没有留话无关——
+        # 只记「有纸的那些局」会把「没人来」和「来了没拿」混成一个数。
+        if self.pos == (2, 2) and not self.door_reached:
+            self.door_reached = 1
+            self.log.append(("door_reached", self.round))
         if (self.pos == (2, 2) and not self.receipt_seen
                 and self.receipt is not None and self.receipt.enabled):
             self.receipt_seen = True
@@ -586,10 +597,13 @@ class Notebook:
         line = (self.receipt.latest_line()
                 if self.receipt is not None and self.receipt.enabled else None)
         if line:
+            self.door_letter = 1
+            self.log.append(("door_letter", self.round))
             print(f"{C['dim']}你第一次走到后门，看见门缝下面塞着一叠纸，纸边露出来一截。{C['off']}")
             print(f"{C['dim']}你抽最上面那张。上面写着一句：「{line}」{C['off']}")
-            print(f"{C['dim']}不是你的字。纸压得很平，像留的人抽出来又塞回去过。{C['off']}")
+            print(f"{C['dim']}不是你的字。纸压得很平，像上一个你抽出来又塞回去过。{C['off']}")
         else:
+            self.log.append(("door_empty", self.round))
             print(f"{C['dim']}你第一次走到后门，看见门缝下面空着。"
                   f"纸边被磨得发毛 —— 这里常有人往里塞东西，又抽走。{C['off']}")
 
@@ -641,10 +655,12 @@ class Notebook:
                 print(f"{C['dim']}她平时写「该怎么办」，是一笔写到底，不停；这一页不是她新写的 —— "
                       f"是她照着一张旧纸，一个字一个字抄下来的。{C['off']}")
                 print(f"{C['dim']}你把纸翻过来，纸背没有透墨。它比本子里的纸旧一点，边上有折痕。{C['off']}")
-                print(f"{C['dim']}这是上一局有人留在门缝里的那句。她看见了，替你抄进了本子。{C['off']}")
+                print(f"{C['dim']}这是上一局你留在门缝里的那句。她看见了，替你抄进了本子。{C['off']}")
                 self.pages.pop(i - 1)
-                print(f"{C['dim']}你把它撕下来，夹在指缝里。这一页不是假话，是别人的话 —— "
+                print(f"{C['dim']}你把它撕下来，夹在指缝里。这一页不是假话，是上一个你留下的话 —— "
                       f"只是没经你同意，进了你的本子。{C['off']}")
+                self.door_read = 1
+                self.log.append(("door_read", self.round, "echo"))
                 self.log.append(("caught", i, p["text"], "echo"))
             else:
                 print(f"{C['rd']}这一页的墨迹是新的，而且没有编号。不是你写的。{C['off']}")
@@ -845,7 +861,8 @@ class Notebook:
         if self.receipt is not None and self.receipt.enabled:
             leave = self.prompt_leave()
             quote = self.pieces[-1] if self.pieces else "这一局没带出原话"
-            entry = make_entry(self.seed, code, TITLES[code], quote, leave, self.name)
+            note = (f"门：路过{self.door_reached}·有纸{self.door_letter}·读过{self.door_read}")
+            entry = make_entry(self.seed, code, TITLES[code], quote, leave, self.name, note=note)
             if self.receipt.append(entry):
                 shown = os.path.basename(self.receipt.path)
                 print(f"{C['dim']}已写入回执（{shown}）。{C['off']}")
