@@ -100,6 +100,8 @@ python test_notebook.py     # 56 项 API 规则 + 29 项结局 + 13 项真实 st
 
 ## 开发
 
+设计判据（谁说了算、每个改动过哪四关、什么不许做）在 [设计手册.md](设计手册.md)。那一页是给我的，不是给玩家的——它超过 500 字就说明我在写法典。
+
 CI 在 `.github/workflows/test.yml`：每次推上去都跑一遍 `test_notebook.py` 和 `demo.py`。
 
 本地推送用 `node tools/push.mjs "提交说明"`（这台机器上 `git push` 走 443 不通，脚本改走 git data API，token 从 `GH_TOKEN` 环境变量读）。`git push` 哪天通了就换回 `git push origin main`，脚本留着当备胎。
