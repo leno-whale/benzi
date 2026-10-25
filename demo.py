@@ -18,7 +18,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NB = os.path.join(HERE, "notebook_v04.py")
+# 团队目录里叫 notebook_v04.py，进根目录后叫 notebook.py —— 两个名字都认。
+_CAND = [os.path.join(HERE, "notebook.py"), os.path.join(HERE, "notebook_v04.py")]
+NB = next((p for p in _CAND if os.path.exists(p)), _CAND[0])
 TMP = os.path.join(HERE, "_tmp", "demo")
 RECEIPT = os.path.join(TMP, "回执.md")
 LEAVE = "上一次我走到后门，门缝里什么也没有。这次留一句。"
