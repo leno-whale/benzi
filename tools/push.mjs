@@ -38,7 +38,7 @@ async function call(method, url, body) {
   return j;
 }
 
-const SKIP = new Set([".git", "__pycache__", "node_modules", ".venv"]);
+const SKIP = new Set([".git", "__pycache__", "node_modules", ".venv", "_tmp"]);
 const SKIP_EXT = new Set([".pyc", ".pyo"]);
 
 function walk(dir, base = "") {
