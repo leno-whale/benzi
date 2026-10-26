@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """发版前自检 —— 别让我以为自己发出去了。
 
-跑法：python 发版前自检.py
+跑法：python tools/发版前自检.py
 全过才去打 tag、推上去。任何一条红，就停。
 
 它检查四件（都是我真栽过的）：
-1. 测试全绿（204 项；挂了就是上次那种「演示那步找不到文件」）
+1. 测试全绿（299 项；挂了就是上次那种「演示那步找不到文件」）
 2. 手册没超 500 字（超了说明我在写法典）
 3. 版本号写清楚（notebook.py 里的 VERSION，跟要打的 tag 对得上）
 4. 该推的东西里没有本地垃圾（_tmp/、_blind.txt、*.pyc、回执.md 这些）
@@ -19,12 +19,13 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)  # 脚本在 tools/ 里，仓库根是上一层
 JUNK_PATTERNS = ("_tmp/", "_blind", "__pycache__", ".pyc", "回执.md", "_probe", ".tmp.")
 JUNK_OK = {"回执与旁批.md"}  # 不进仓库的那份在别的目录，这里防的是误放
 
 
 def run(cmd):
-    return subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, encoding="utf-8")
+    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
 
 
 def check_tests():
@@ -35,15 +36,15 @@ def check_tests():
 
 
 def check_manual():
-    p = os.path.join(HERE, "设计手册.md")
+    p = os.path.join(ROOT, "docs", "设计手册.md")
     if not os.path.exists(p):
-        return False, "找不到 设计手册.md"
+        return False, "找不到 docs/设计手册.md"
     n = len(open(p, encoding="utf-8").read())
     return n <= 500, f"设计手册 {n} 字符" + ("（≤500 ✓）" if n <= 500 else "（超过 500，删条款，别加条款）")
 
 
 def check_version():
-    p = os.path.join(HERE, "notebook.py")
+    p = os.path.join(ROOT, "notebook.py")
     m = re.search(r'^VERSION\s*=\s*"([^"]+)"', open(p, encoding="utf-8").read(), re.M)
     if not m:
         return False, "notebook.py 里没有 VERSION"
