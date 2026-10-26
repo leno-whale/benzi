@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本子 v0.4「回执」—— 自动化测试
+"""本子 v0.5（原话池 + 跨机器门缝）—— 自动化测试
 
-    python test_notebook_v04.py
+    python test_notebook.py
 
 安静跑完：只报每组通过数，失败项逐条列出。全过退出 0，否则退出 1。
-v0.3.1 的旧语义回归全部保留；新增回执/留话/回声/CLI 组。
+v0.3.1 的旧语义回归全部保留；新增回执/留话/回声/CLI/原话池/跨机器门缝组。
 所有临时文件都放本目录下的 `_tmp`（系统 tempfile / mkdtemp 在本沙箱会挂起或 ACL 拒绝）。
 """
 import builtins
@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import io
 import itertools
+import json
 import os
 import shutil
 import subprocess
@@ -20,7 +21,7 @@ import sys
 from collections import deque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NOTEBOOK = os.path.join(HERE, "notebook_v04.py")
+NOTEBOOK = os.path.join(HERE, "notebook.py")
 if not os.path.exists(NOTEBOOK):
     NOTEBOOK = os.path.join(HERE, "notebook.py")
 TMP_BASE = os.path.join(HERE, "_tmp")
@@ -125,7 +126,7 @@ def test_api():
     check("抄写成功", ok is True)
     check("抄后 pieces=1", len(g.pieces) == 1)
     check("抄后 hidden 移除", hidden[0] not in g.hidden)
-    check("原话落成了本子的一页", any(p["piece"] and p["text"] in nb.PIECES for p in g.pages))
+    check("原话落成了本子的一页", any(p["piece"] and p["text"] in g.quote_pool.texts() for p in g.pages))
     check("抄写写了 copy 日志", any(e[0] == "copy" for e in g.log), str(g.log[-1:]))
 
     g = nb.Notebook(seed=2)
@@ -723,11 +724,11 @@ def test_finish_receipt():
     check("留话写进回执", "留话：我给下一局留一句" in txt)
     check("结局写对", "结局：B · 三张别人的话" in txt)
     check("原话取最后一张", f"原话：{nb.PIECES[2]}" in txt)
-    check("版本写对", "版本：0.4.1" in txt)
+    check("版本写对", "版本：0.5" in txt)
     check("名字写对", "· 你" in txt)
     check("名字最多 20 字", len(nb.make_entry(1, "A", "压痕", "q", "l", "名" * 30)["who"]) == 20)
     check("只打印文件名，不打绝对路径", "回执.md" in out and path not in out)
-    check("有「下一局会先看到」确认句", "会先看到" in out)
+    check("有「可能看到它」确认句", "可能看到它" in out)
 
     st2, path2 = _store("finish2")
     g = _win_game(st2)
@@ -796,8 +797,8 @@ def test_echo_page():
     check("验回声：成功并撕掉", ok is True and not any(p.get("echo") for p in g.pages))
     check("验回声：caught 四元组", ("caught", idx, LEAVE, "echo") in g.log)
     check("echo_caught 为 True", g.echo_caught is True)
-    check("验回声文案：门缝/上一局/上一个你",
-          "门缝" in out and "上一局" in out and "上一个你" in out)
+    check("验回声文案：门缝/有人留在/别人留下",
+          "门缝" in out and "有人留在" in out and "别人留下" in out)
 
     # 普通假页：日志仍是 3 元组，echo_caught 为 False
     g2 = nb.Notebook(seed=3, receipt=None, echo="never")
@@ -864,10 +865,10 @@ def test_echo_page():
     g8 = _win_game(None)
     g8.log = [("caught", 2, LEAVE, "echo")]
     out8 = quiet(g8.finish)[1]
-    check("A/B coda：验到回声才追加", "门缝里塞着一叠纸" in out8)
+    check("A/B coda：验到回声才追加", "你想起之前读到的那张纸" in out8)
     g9 = _win_game(None)
     out9 = quiet(g9.finish)[1]
-    check("A/B coda：没验到不追加", "门缝里塞着一叠纸" not in out9)
+    check("A/B coda：没验到不追加", "你想起之前读到的那张纸" not in out9)
 
 
 def test_door_slot():
@@ -934,7 +935,7 @@ def test_cli():
     check("--receipt 缺路径不崩、不开回执", r.returncode == 0)
 
     r = run(["--plain", "--version"], "")
-    check("--version 打印 0.4.1", r.returncode == 0 and "0.4.1" in r.stdout)
+    check("--version 打印 0.5", r.returncode == 0 and "0.5" in r.stdout)
 
     # 在进程内测 TTY 默认：替换 sys.stdin 与 Notebook，只检查传参
     class FakeIn:
@@ -972,6 +973,384 @@ def test_cli():
         nb.Notebook, nb.sys.stdin = old_nb, old_stdin
 
 
+def test_fold():
+    group("折叠与展开")
+
+    g = nb.Notebook(seed=3)
+    check("API 默认 fold=False", not g.fold_enabled)
+
+    g = _blank(seed=3)
+    g.fold_enabled = True
+    g.round, g.fake_pool = 3, []
+    g.pages = [_pg("一" * 20), _pg("二" * 20), _pg("三" * 20)]
+    g.next_round()
+    p1 = g.pages[0]
+    check("第 4 次醒来折最旧页", g.round == 4 and p1.get("folded") is True)
+    check("折起页 text 是大意提示", p1["text"].startswith("（折起来的一页。大意："))
+    check("gist=前 12 字+……", p1.get("gist") == "一" * 12 + "……")
+    check("full_text 保存原文", p1.get("full_text") == "一" * 20)
+    check("folded/ever_folded 都置位", bool(p1.get("folded")) and bool(p1.get("ever_folded")))
+
+    g.round = 7
+    g.next_round()
+    check("第 8 次醒来折下一页", g.round == 8 and g.pages[1].get("folded") is True)
+
+    before = g.round
+    quiet(g.unfold, 1)
+    check("展开花 1 次醒来", g.round == before + 1)
+    check("展开恢复原文", g.pages[0]["text"] == "一" * 20 and not g.pages[0].get("folded"))
+    check("ever_folded 保留", g.pages[0].get("ever_folded") is True)
+    check("展开计数", g.wake_marks["unfold"] == 1 and ("unfold", 1) in g.log)
+
+    g.round = 11
+    g.next_round()
+    check("第 12 次醒来再折一页", g.pages[2].get("folded") is True)
+    check("展开过的页不再折", g.pages[0].get("folded") is False)
+
+    g2 = _blank(seed=4)
+    g2.fold_enabled = True
+    g2.round, g2.fake_pool = 3, []
+    g2.pages = [_pg("原话甲", piece=True), _pg("旧页乙" * 8), _pg("旧页丙" * 8)]
+    g2.next_round()
+    check("原话永不折", not g2.pages[0].get("folded") and g2.pages[1].get("folded"))
+
+    g3 = _blank(seed=5)
+    g3.fold_enabled = True
+    g3.round, g3.fake_pool = 3, []
+    g3.pages = [_pg("原话甲", piece=True), _pg("原话乙", piece=True), _pg("原话丙", piece=True)]
+    g3.next_round()
+    check("无候选页时折叠 no-op", all(not p.get("folded") for p in g3.pages))
+
+    g4 = _blank(seed=6)
+    g4.fold_enabled = True
+    g4.round, g4.fake_pool = 3, []
+    g4.pages = [_pg("整页" * 10), _pg("另一页" * 10), _pg("第三页" * 10)]
+    g4.next_round()
+    r0 = g4.round
+    r, out = quiet(g4.verify, 1)
+    check("折起页验不了", r is False)
+    check("验折起页不花醒来", g4.round == r0)
+    check("验折起页不记 caught", not any(e[0] == "caught" for e in g4.log))
+    check("验折起页提示先展开", "折" in out)
+
+    g5 = _blank(seed=7)
+    g5.pages = [_pg("没折的页")]
+    r, _ = quiet(g5.unfold, 1)
+    check("展开没折的页失败且不花醒来", r is False and g5.round == 1)
+
+    g6 = _blank(seed=8)
+    g6.pieces = list(nb.PIECES)
+    g6.pos, g6.over = (2, 0), "lose"
+    g6.wake_marks["unfold"] = 2
+    txt = "".join(g6.ending_text("E"))
+    check("E 数字行含展开次数", "2 次展开" in txt)
+
+
+def test_unlocated():
+    group("未定位")
+    g = _blank(seed=11)
+    r0 = g.round
+    quiet(g.note_unlocated, "门边的划痕")
+    check("没记不花醒来、不推进", g.round == r0)
+    check("没记进未定位", g.unlocated == ["门边的划痕"])
+    check("报告显示未定位条数", "未定位 1 条" in g.report())
+
+    for i in range(4):
+        quiet(g.note_unlocated, f"线索{i}")
+    check("未定位可到 5 条", len(g.unlocated) == 5)
+    quiet(g.note_unlocated, "第六条")
+    check("超出 5 条挤最早", len(g.unlocated) == 5 and g.unlocated[0] == "线索0")
+    r, _ = quiet(g.note_unlocated, "   ")
+    check("空没记被拒", r is False)
+    check("没记不写页、不写本子", len(g.pages) == 0 and g.pieces == [])
+
+
+def test_clock_and_fields():
+    group("时钟与回执字段")
+    t = [100.0]
+    g = nb.Notebook(seed=1, clock=lambda: t[0])
+    t[0] = 225.0
+    check("报告时长用注入时钟", "2 分 5 秒" in g.report())
+
+    st, path = _store("clock_v05")
+    e = nb.make_entry(3, "B", nb.TITLES["B"], nb.PIECES[0], "下一句", "甲",
+                      duration="2 分 5 秒",
+                      wake_usage="走 3 · 写 1 · 抄 2 · 验 1 · 展开 1",
+                      door_usage="路过 2·有纸 1·读过 1", unlocated=2)
+    check("新字段 entry 带 duration", "duration" in e and e["unlocated"] == 2)
+    st.append(e)
+    txt = _read(path)
+    check("回执含时长", "- 时长：2 分 5 秒" in txt)
+    check("回执含醒来用量", "- 醒来用在哪：走 3 · 写 1 · 抄 2 · 验 1 · 展开 1" in txt)
+    check("回执含门计数", "- 门：路过 2·有纸 1·读过 1" in txt)
+    check("回执含未定位", "- 未定位：2 条" in txt)
+    old = nb.make_entry(3, "B", nb.TITLES["B"], nb.PIECES[0], "旧", "甲")
+    check("旧 entry 不强行加新字段", "duration" not in old)
+
+
+def test_door_v05():
+    group("门缝 v0.5")
+    d = tmpdir("door_v05")
+    p = os.path.join(d, "门缝", "留话.txt")
+    ds = nb.DoorStore(p)
+    check("门缝空时没得读", ds.latest_line() is None)
+    ds.append("第一句")
+    ds.append("第二句")
+    check("门缝读最后一条", ds.latest_line() == "第二句")
+    check("门缝无文件头、每行一条", _read(p).splitlines() == ["第一句", "第二句"])
+    check("门缝拒空行", ds.append("   ") is False)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n坏行\n   \n好行\n")
+    check("门缝跳过空行/读最后非空", ds.latest_line() == "好行")
+
+    ds.append("留给下一个人")
+    g = nb.Notebook(seed=1, door=ds, echo="never")
+    g.pos = (1, 2)
+    quiet(g.move, "e")
+    check("第一次到后门看到门缝", "留给下一个人" in quiet(g.show, True)[1])
+    check("门缝计数：路过/有纸/读过",
+          (g.door_reached, g.door_letter, g.door_read) == (1, 1, 1))
+    quiet(g.move, "w")
+    quiet(g.move, "e")
+    out2 = quiet(g.move, "e")[1]
+    check("再路过不重复读同一条", g.door_read == 1 and "抽出一张" not in out2)
+
+    empty = nb.DoorStore(os.path.join(d, "空门缝.txt"))
+    g2 = nb.Notebook(seed=1, door=empty, echo="never")
+    g2.pos = (1, 2)
+    quiet(g2.move, "e")
+    check("空门缝计数有纸=0", (g2.door_reached, g2.door_letter, g2.door_read) == (1, 0, 0))
+    check("空门缝显示空着", "空着" in quiet(g2.show, True)[1])
+
+    st, rp = _store("door_finish")
+    g3 = _win_game(store=st)
+    g3.door = ds
+    before = ds.latest_line()
+    with _input("留给下一个"):
+        quiet(g3.finish)
+    check("留话同时写回执和门缝", ds.latest_line() == "留给下一个" and "留给下一个" in _read(rp))
+    check("门缝追加不覆盖旧的", before in _read(p))
+
+    g4 = _win_game(store=None)
+    g4.door = ds
+    latest = ds.latest_line()
+    with _input("不该写"):
+        quiet(g4.finish)
+    check("无回执不写门缝", ds.latest_line() == latest)
+
+    ds.append("门缝里的回声")
+    g5 = nb.Notebook(seed=1, door=ds, echo="always")
+    check("回声优先读门缝", g5.echo_text == "门缝里的回声" and g5.echo_wake in (3, 6, 9, 12))
+
+    st2, _ = _store("door_fallback", _entry())
+    empty2 = nb.DoorStore(os.path.join(d, "空2.txt"))
+    g6 = nb.Notebook(seed=1, receipt=st2, door=empty2, echo="always")
+    check("门缝空回落自己回执", g6.echo_text == "上一局的那句话", repr(g6.echo_text))
+
+
+def test_v05_cli():
+    group("v0.5 命令行")
+    d = tmpdir("cli_v05")
+    rp = os.path.join(d, "回执.md")
+    dp = os.path.join(d, "我的门缝.txt")
+
+    class FakeIn:
+        def isatty(self):
+            return True
+
+    class Dummy:
+        last = None
+
+        def __init__(self, **kw):
+            Dummy.last = kw
+
+        def play(self):
+            pass
+
+    old_nb, old_stdin = nb.Notebook, nb.sys.stdin
+    try:
+        nb.Notebook = Dummy
+        nb.sys.stdin = FakeIn()
+        nb.main([])
+        check("main 默认 fold=True", Dummy.last["fold"] is True)
+        nb.main(["--no-fold"])
+        check("--no-fold 关折叠", Dummy.last["fold"] is False)
+        nb.main(["--receipt", rp, "--door", dp])
+        check("--door 覆盖门缝路径", Dummy.last["door"].path == dp)
+        nb.main(["--no-receipt", "--door", dp])
+        check("--no-receipt 连门缝一起关", Dummy.last["door"] is None)
+    finally:
+        nb.Notebook, nb.sys.stdin = old_nb, old_stdin
+
+
+def test_quote_pool():
+    group("原话池")
+    p = nb.load_quote_pool()
+    check("池子 8 条 active", len(p.active()) == 8)
+    check("池子不是占位", not p.placeholder)
+    check("池子版本", p.version == "原话池-v1")
+    check("每条有 self/other 标签",
+          all(q.get("to") in ("self", "other") for q in p.active()))
+
+    a = [q["id"] for q in p.select(3)]
+    b = [q["id"] for q in p.select(3)]
+    check("同 seed 抽同一组", a == b)
+    check("抽 3 条且不重复", len(a) == 3 and len(set(a)) == 3)
+    tags_ok = True
+    for s in range(200):
+        tags = {q.get("to") for q in p.select(s)}
+        if not ({"self", "other"} <= tags):
+            tags_ok = False
+            break
+    check("每局至少一张 self/other", tags_ok)
+    c = [q["id"] for q in p.select(4)]
+    check("不同 seed 可抽不同组", a != c)
+
+    g = nb.Notebook(seed=1)
+    g.pos = (1, 0)
+    g.hidden = {(1, 0): "某句"}
+    g.hidden_ids = {(1, 0): "q07"}
+    quiet(g.copy)
+    check("抄写记下原话 id", g.piece_ids == ["q07"])
+
+    d = tmpdir("pool_retired")
+    pp = os.path.join(d, "pool.md")
+    with open(pp, "w", encoding="utf-8") as f:
+        f.write("pool: test-pool\nstatus: active\n\n"
+                "## q01\n一\n## q02\n二\n## q03 retired\n三\n## q04\n四\n")
+    p2 = nb.load_quote_pool(pp)
+    check("retired 不参与抽取", [x["id"] for x in p2.active()] == ["q01", "q02", "q04"])
+
+    ph = os.path.join(d, "placeholder.md")
+    with open(ph, "w", encoding="utf-8") as f:
+        f.write("pool: ph\nstatus: placeholder\n\n"
+                "## q01\n###原话-01###\n## q02\n二\n## q03\n三\n")
+    ph_pool = nb.load_quote_pool(ph)
+    try:
+        nb.Notebook(seed=1, quote_pool=ph_pool, strict_content=True)
+        strict_ok = False
+    except ValueError:
+        strict_ok = True
+    check("strict-content 拒绝占位池", strict_ok)
+    check("strict-content 接受真实池",
+          nb.Notebook(seed=1, strict_content=True).quote_pool.status == "active")
+
+    pp2 = os.path.join(d, "bad.md")
+    with open(pp2, "w", encoding="utf-8") as f:
+        f.write("pool: bad\nstatus: active\n\n## q01\n###原话-01###\n")
+    try:
+        nb.load_quote_pool(pp2)
+        bad_ok = False
+    except ValueError:
+        bad_ok = True
+    check("active 池里出现占位格会报错", bad_ok)
+
+    try:
+        nb.load_quote_pool(os.path.join(d, "missing.md"))
+        missing_ok = False
+    except ValueError:
+        missing_ok = True
+    check("显式 --pool 指错会报错", missing_ok)
+
+    r = subprocess.run([sys.executable, NOTEBOOK, "--strict-content"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       env=dict(os.environ, PYTHONUTF8="1"))
+    check("CLI strict 真实池退出 0", r.returncode == 0)
+    r2 = subprocess.run([sys.executable, NOTEBOOK, "--strict-content", "--pool", ph],
+                        capture_output=True, text=True, encoding="utf-8",
+                        env=dict(os.environ, PYTHONUTF8="1"))
+    check("CLI strict 占位池退出 2", r2.returncode == 2)
+    check("CLI strict 说清原因", "占位" in (r2.stdout + r2.stderr))
+
+    e = nb.make_entry(3, "B", nb.TITLES["B"], "一句原话", "留话", "甲",
+                      pool="原话池-v1", quote_ids="q01,q03")
+    store = nb.ReceiptStore(os.path.join(d, "r.md"))
+    txt = store._format(e)
+    check("回执写原话池", "- 原话池：原话池-v1" in txt)
+    check("回执写三张 id", "- 原话 id：q01,q03" in txt)
+    back = nb.ReceiptStore._parse_block(txt.splitlines())
+    check("回执解析 pool", back and back.get("pool") == "原话池-v1")
+    check("回执解析 id", back and back.get("quote_ids") == "q01,q03")
+
+
+def test_inbox():
+    group("跨机器门缝")
+    d = tmpdir("inbox")
+    s = nb.InboxStore(d, name="甲")
+    check("空目录没有留话", s.latest_line() is None)
+    check("第一次写成功", s.append("第一句"))
+    check("第二次写成功", s.append("第二句"))
+    check("一人一次一份文件", len(s._files()) == 2)
+    latest = s.latest_line()
+    check("读最近一条", latest == "第二句")
+    check("读状态记在 .read/甲.json",
+          os.path.exists(os.path.join(d, ".read", "甲.json")))
+    read = open(os.path.join(d, ".read", "甲.json"), encoding="utf-8").read()
+    last_name = json.loads(read)["last"]
+    check("读状态记的是刚读的文件", last_name in s._files())
+    check("读状态对应的文件确是最新", "第二句" in open(
+        os.path.join(d, last_name), encoding="utf-8").read())
+
+    # 文件头时间优先于文件名日期（单独目录，避免被刚才的 append 抢走）
+    d_head = tmpdir("inbox_head")
+    s_head = nb.InboxStore(d_head, name="甲")
+    with open(os.path.join(d_head, "2030-01-01-乙-0001.md"), "w", encoding="utf-8") as f:
+        f.write("<!-- t: 2020-01-01T10:00:00+08:00 -->\n\n旧头\n第二行\n")
+    with open(os.path.join(d_head, "2025-01-01-丙-0002.md"), "w", encoding="utf-8") as f:
+        f.write("<!-- t: 2026-01-01T10:00:00+08:00 -->\n\n新头\n第二行\n")
+    check("文件头时间优先于文件名", s_head.latest_line() == "新头")
+
+    # 没有文件头时退回文件名日期
+    with open(os.path.join(d_head, "2031-01-01-丁-0003.md"), "w", encoding="utf-8") as f:
+        f.write("\n文件名日期\n")
+    check("没有头按文件名日期", s_head.latest_line() == "文件名日期")
+    check("文件名日期不算时间未知", s_head.time_unknown is False)
+
+    # 头和文件名都没有，才退回 mtime，并标记时间未知（单独目录）
+    d_mtime = tmpdir("inbox_mtime")
+    s_mtime = nb.InboxStore(d_mtime, name="甲")
+    p = os.path.join(d_mtime, "nohint.md")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("只有正文\n")
+    os.utime(p, (946684800, 946684800))
+    check("最后才退回 mtime", s_mtime.latest_line() == "只有正文")
+    check("mtime 兜底标时间未知", s_mtime.time_unknown is True)
+
+    # 署名清洗、不覆盖
+    d2 = tmpdir("inbox_name")
+    s2 = nb.InboxStore(d2, name="a/b:c")
+    check("署名清洗后能写", s2.append("一句"))
+    check("文件名不含斜杠", all("/" not in x and ":" not in x for x in s2._files()))
+    check("署名清洗成 a_b_c", any("a_b_c" in x for x in s2._files()))
+
+    # 回声从 inbox 取最近一条，不经过 DoorStore
+    d_echo = tmpdir("inbox_echo")
+    s_echo = nb.InboxStore(d_echo, name="甲")
+    s_echo.append("门缝里的一句")
+    g = nb.Notebook(seed=3, door=s_echo, echo="always", fold=False)
+    for _ in range(g.echo_wake - 1):
+        g.next_round()
+    check("回声页来自 inbox", any(p["text"] == "门缝里的一句" for p in g.pages))
+
+    # CLI 接线
+    rp = os.path.join(d, "r.md")
+    class Dummy:
+        def __init__(self, **kw):
+            Dummy.last = kw
+        def play(self):
+            pass
+    old = nb.Notebook
+    try:
+        nb.Notebook = Dummy
+        nb.main(["--receipt", rp, "--inbox", d, "--name", "甲"])
+        check("--inbox 用 InboxStore", isinstance(Dummy.last["door"], nb.InboxStore))
+        check("--inbox 传署名", Dummy.last["door"].name == "甲")
+        nb.main(["--no-receipt", "--inbox", d])
+        check("--no-receipt 连 inbox 一起关", Dummy.last["door"] is None)
+    finally:
+        nb.Notebook = old
+
+
 def main():
     print("本子 自动化测试\n")
     test_api()
@@ -983,6 +1362,13 @@ def main():
     test_echo_page()
     test_door_slot()
     test_cli()
+    test_fold()
+    test_unlocated()
+    test_clock_and_fields()
+    test_door_v05()
+    test_v05_cli()
+    test_quote_pool()
+    test_inbox()
     print()
     for title, total, passed in GROUPS:
         print(f"  {title}：{passed}/{total}")

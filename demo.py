@@ -1,153 +1,136 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本子 v0.4「回执」—— 非交互演示
+"""本子 v0.5（原话池 + 跨机器门缝）——两局演示（非交互）。
 
-    python demo_v04.py
+第一局：seed 3，最短收纸路线，赢，往 inbox 里留一句。
+第二局：seed 1，共用同一个 inbox，--echo always；第 8 次醒来折起一页，
+        展开它（花第 9 次醒来），再验第 3 页，验到第一局留在 inbox 里的回声。
+第二局回执会写 `原话池：原话池-v1` 和三张原话 id；演示用定稿池。
 
-一局：seed 3，最短路线收齐三张原话，赢，留一句话进回执。
-二局：同一份回执，让回声页出现，再把它验出来。
-临时回执放在本目录 `_tmp/demo/`（本沙箱里系统 tempfile 会挂起）。
+两局回执分开写；门缝是一人一份文件，第一局的文件不被第二局覆盖。
+退出码 0 表示演示全部成立。
 """
-import contextlib
-import importlib.util
-import io
-import itertools
 import os
-import shutil
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 团队目录里叫 notebook_v04.py，进根目录后叫 notebook.py —— 两个名字都认。
-_CAND = [os.path.join(HERE, "notebook.py"), os.path.join(HERE, "notebook_v04.py")]
-NB = next((p for p in _CAND if os.path.exists(p)), _CAND[0])
+NOTEBOOK = os.path.join(HERE, "notebook.py")
 TMP = os.path.join(HERE, "_tmp", "demo")
-RECEIPT = os.path.join(TMP, "回执.md")
-LEAVE = "上一次我走到后门，门缝里什么也没有。这次留一句。"
+R1 = os.path.join(TMP, "回执-第一局.md")
+R2 = os.path.join(TMP, "回执-第二局.md")
+INBOX = os.path.join(TMP, "门缝", "inbox")
+LEAVE = "下一局的人，别急着写。"
+LEAVE2 = "我收到了，你也别急。"
 
 
-def load_nb():
-    spec = importlib.util.spec_from_file_location("nb", NB)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def run(lines, *args):
+def run(args, stdin_text):
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return subprocess.run(
-        [sys.executable, NB, "--plain", "--seed", "3", "--receipt", RECEIPT, *args],
-        input="\n".join(lines) + "\n", capture_output=True, text=True,
-        encoding="utf-8", env=env)
+        [sys.executable, NOTEBOOK] + args,
+        input=stdin_text,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        env=env,
+    )
 
 
-def dist(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def route_cmds(nb):
-    g = nb.Notebook(seed=3)
-    rooms = list(g.hidden)
-
-    def one(perm):
-        cur, seq = (0, 0), []
-        for r in perm:
-            while cur != r:
-                dx, dy = r[0] - cur[0], r[1] - cur[1]
-                if dx > 0:
-                    seq.append("e"); cur = (cur[0] + 1, cur[1])
-                elif dx < 0:
-                    seq.append("w"); cur = (cur[0] - 1, cur[1])
-                elif dy > 0:
-                    seq.append("n"); cur = (cur[0], cur[1] + 1)
-                else:
-                    seq.append("s"); cur = (cur[0], cur[1] - 1)
-        while cur != (0, 0):
-            dx, dy = -cur[0], -cur[1]
-            if dx > 0:
-                seq.append("e"); cur = (cur[0] + 1, cur[1])
-            elif dx < 0:
-                seq.append("w"); cur = (cur[0] - 1, cur[1])
-            elif dy > 0:
-                seq.append("n"); cur = (cur[0], cur[1] + 1)
-            else:
-                seq.append("s"); cur = (cur[0], cur[1] - 1)
-        return seq
-
-    seq = min((one(p) for p in itertools.permutations(rooms)), key=len)
-    actions, pos, copied = [], (0, 0), set()
-    for d in seq:
-        actions.append(d)
-        dx, dy = nb.ARROWS[d]
-        pos = (pos[0] + dx, pos[1] + dy)
-        if pos in rooms and pos not in copied:
-            actions.append("抄")
-            copied.add(pos)
-            if len(copied) == 1:
-                actions.append("验 2")
-    return actions
+def inbox_files():
+    try:
+        return sorted(n for n in os.listdir(INBOX) if n.endswith(".md"))
+    except FileNotFoundError:
+        return []
 
 
 def main():
-    if not os.path.exists(NB):
-        print("找不到 notebook_v04.py")
-        return 1
-    shutil.rmtree(TMP, ignore_errors=True)
-    os.makedirs(TMP, exist_ok=True)
-    nb = load_nb()
+    for d in (TMP, INBOX):
+        os.makedirs(d, exist_ok=True)
+    for p in (R1, R2):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+    for n in inbox_files():
+        os.remove(os.path.join(INBOX, n))
 
-    print("=== 第一局：收纸、赢、留话 ===")
-    actions = route_cmds(nb)
-    print("动作：", " ".join(actions), f"（{len(actions)} 次醒来）")
-    r = run(actions + [LEAVE], "--name", "演示的人")
-    if r.returncode != 0:
-        print(r.stdout[-2000:])
-        print(r.stderr[-2000:])
+    # 第一局：seed 3，最短收纸路线；折叠在途中发生，路线仍赢。
+    first = "\n".join([
+        "n", "抄", "验 2", "n", "抄", "s", "e", "e", "s", "抄", "w", "w",
+        LEAVE,
+    ]) + "\n"
+    g1 = run(["--plain", "--seed", "3", "--receipt", R1, "--inbox", INBOX,
+              "--name", "甲"], first)
+    print("=== 第一局（seed 3，inbox）===")
+    print("\n".join(g1.stdout.splitlines()[-10:]))
+    if g1.returncode != 0:
+        print("第一局退出码 %s\n%s" % (g1.returncode, g1.stderr[-400:]))
         return 1
-    tail = [ln for ln in r.stdout.splitlines() if ln.strip()][-8:]
-    print("\n".join(tail))
-    if "后门开了" not in r.stdout:
-        print("!! 第一局没有赢")
+    if "原话 3/3" not in g1.stdout:
+        print("第一局没有收齐三张原话")
         return 1
-    if not os.path.exists(RECEIPT):
-        print("!! 没有写回执")
+    if not os.path.exists(R1):
+        print("第一局回执没写出来")
         return 1
-
-    print("\n=== 回执文件（前 12 行） ===")
-    with open(RECEIPT, encoding="utf-8") as f:
-        print("\n".join(f.read().splitlines()[:12]))
-
-    print("\n=== 第二局：回声页出现、验出来 ===")
-    st = nb.ReceiptStore(RECEIPT)
-    g = nb.Notebook(seed=3, receipt=st, echo="always")
-    wake = g.echo_wake
-    echo_text = g.echo_text
-    if wake is None:
-        print("!! 第二局没有排到回声")
+    r1_text = open(R1, encoding="utf-8").read()
+    if "- 原话池：原话池-v1" not in r1_text:
+        print("第一局回执没有标原话池版本")
         return 1
-    print(f"回声排在第 {wake} 次醒来；门缝里的留话：「{echo_text}」")
-    with contextlib.redirect_stdout(io.StringIO()):
-        for _ in range(wake - 1):
-            g.next_round()
-    idx = next(i for i, p in enumerate(g.pages, 1) if p.get("echo") is True)
-    print(f"回声页出现在第 {idx} 页；走 {wake - 1} 次，然后「验 {idx}」")
-    moves = ["n", "s"] * ((wake - 1 + 1) // 2)
-    r2 = run(moves[:wake - 1] + [f"验 {idx}", "退"],
-             "--echo", "always", "--name", "下一个人")
-    if r2.returncode != 0:
-        print(r2.stdout[-2000:])
-        print(r2.stderr[-2000:])
+    if "- 原话 id：" not in r1_text:
+        print("第一局回执没有记原话 id")
         return 1
-    tail2 = [ln for ln in r2.stdout.splitlines() if ln.strip()][-14:]
-    print("\n".join(tail2))
-    if "门缝" not in r2.stdout or echo_text not in r2.stdout:
-        print("!! 第二局没有验到回声")
+    files1 = inbox_files()
+    if len(files1) != 1:
+        print("第一局没有在 inbox 里留下恰好一份文件：%s" % files1)
+        return 1
+    first_path = os.path.join(INBOX, files1[0])
+    if LEAVE not in open(first_path, encoding="utf-8").read():
+        print("第一局的留话没进 inbox")
+        return 1
+    if "门缝是明文" not in g1.stdout:
+        print("第一局没有明说门缝是明文")
         return 1
 
-    print("\n=== 演示通过 ===")
-    print(f"回执：{RECEIPT}（跑完保留，可自己打开看）")
+    # 第二局：共用 inbox；第 9 次醒来展开折痕，再验第 3 页（回声页）。
+    second = "\n".join([
+        "n", "s", "n", "s", "n", "s", "n",
+        "展开 1",
+        "验 3",
+        # 不写「退」：退出分支只报数、不落回执；让醒来自然用完，finish() 才会留话+写回执。
+        "n", "s", "n", "s",
+        LEAVE2,
+    ]) + "\n"
+    g2 = run(["--plain", "--seed", "1", "--receipt", R2, "--inbox", INBOX,
+              "--echo", "always", "--name", "乙"], second)
+    print("\n=== 第二局（seed 1，共享 inbox）===")
+    print("\n".join(g2.stdout.splitlines()[-12:]))
+    if g2.returncode != 0:
+        print("第二局退出码 %s\n%s" % (g2.returncode, g2.stderr[-400:]))
+        return 1
+    if "有人留在门缝里的那句" not in g2.stdout:
+        print("第二局没有验到门缝回声")
+        return 1
+    if "把折痕抹开" not in g2.stdout:
+        print("第二局没有演示展开")
+        return 1
+    if not os.path.exists(R2):
+        print("第二局回执没写出来")
+        return 1
+    if not os.path.exists(first_path):
+        print("第一局的门缝文件被覆盖/删掉了")
+        return 1
+    if LEAVE not in open(first_path, encoding="utf-8").read():
+        print("第一局的门缝文件被改写了")
+        return 1
+    files2 = inbox_files()
+    if len(files2) != 2:
+        print("第二局后 inbox 不是一人一份：%s" % files2)
+        return 1
+    print("\n两局完成：第一局赢并留话；第二局第 9 次醒来展开后验到回声。")
+    print("回执分开：%s / %s" % (os.path.basename(R1), os.path.basename(R2)))
+    print("门缝一人一份：%s" % " / ".join(files2))
     return 0
 
 

@@ -4,3 +4,12 @@ _probe.py
 .DS_Store
 _blind.txt
 _tmp/
+
+# 玩家数据：回执里有留话和署名，不该进仓库
+回执*.md
+门缝/
+留话.txt
+
+# 工作现场与带凭据的推送脚本
+v0.5/
+tools/
