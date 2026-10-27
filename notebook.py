@@ -59,6 +59,9 @@ DEFAULT_DOOR_PATH = os.path.join(SCRIPT_DIR, "门缝", "留话.txt")
 DEFAULT_INBOX_DIR = os.path.join(SCRIPT_DIR, "门缝", "inbox")
 INBOX_HEADER_RE = re.compile(r"^<!--\s*t:\s*([^\s]+)\s*-->$")
 DEFAULT_QUOTE_POOL = os.path.join(SCRIPT_DIR, "原话池.md")
+# 2026-10-27：GitHub 的 release 附件不接受中文名（会变成 default.md），
+# 所以附件里的池子叫 quote-pool.md —— 这两个别名也认，玩家不用改名。
+POOL_ALIASES = ("quote-pool.md", "quote_pool.md")
 POOL_VERSION = "原话池-v1"
 MIN_QUOTE_POOL = 3
 PLACEHOLDER_MARK = "###原话-"
@@ -156,14 +159,22 @@ def load_quote_pool(path=None):
     只认 `## id` 开头，取下一非空行为正文；`to:` 行标记 self/other；
     `## q01 retired` 表示停用。
     """
+    explicit = bool(path)
     path = path or DEFAULT_QUOTE_POOL
+    if not explicit and not os.path.exists(path):
+        # 附件里的池子可能叫 quote-pool.md（GitHub 不收中文附件名）
+        for alt in POOL_ALIASES:
+            cand = os.path.join(SCRIPT_DIR, alt)
+            if os.path.exists(cand):
+                path = cand
+                break
     if not os.path.exists(path):
         # 兼容：默认池缺失时退回内置三张；显式 --pool 指错则报错。
-        if path != DEFAULT_QUOTE_POOL:
+        if explicit:
             raise ValueError(f"原话池文件不存在：{os.path.basename(path)}")
         # v0.5.1：静默降级改掉 —— 池子缺失时仍可玩，但必须说清「你现在玩的是什么」
         print(f"{C['ye']}⚠ 没找到 原话池.md —— 这一局用的是内置的三张旧原话（v0.4 之前），"
-              f"不是 v0.5 的八条池子。把 原话池.md 放到同目录就恢复。{C['off']}")
+              f"不是 v0.5 的八条池子。把 原话池.md（或 quote-pool.md）放到同目录就恢复。{C['off']}")
         return QuotePool(
             [{"id": f"q{i + 1:02d}", "text": t, "retired": False}
              for i, t in enumerate(PIECES)],
