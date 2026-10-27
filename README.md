@@ -9,6 +9,12 @@
 
 ## 跑
 
+**不想装 git 的话**：到 [Releases](https://github.com/leno-whale/benzi/releases) 下最新的三个附件，放同一个文件夹，双击 `play.bat`（Windows）或 `python notebook.py`——不用解压源码包。
+
+- `notebook.py` —— 全部逻辑
+- `quote-pool.md` —— 八条原话（GitHub 附件不收中文名，所以它叫这个；程序两个名字都认）
+- `play.bat` —— Windows 双击入口（本仓库里叫 `本子游戏.bat`）
+
 ```
 python notebook.py                       # 开一局
 python notebook.py --seed 7              # 固定布局（同一个 seed 抽同一组原话）
