@@ -50,7 +50,7 @@ import sys
 import time
 from datetime import datetime
 
-VERSION = "0.5"
+VERSION = "0.5.1"
 ECHO_SALT = 0x01000093
 QUOTE_SALT = 0x01005101
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -161,6 +161,9 @@ def load_quote_pool(path=None):
         # 兼容：默认池缺失时退回内置三张；显式 --pool 指错则报错。
         if path != DEFAULT_QUOTE_POOL:
             raise ValueError(f"原话池文件不存在：{os.path.basename(path)}")
+        # v0.5.1：静默降级改掉 —— 池子缺失时仍可玩，但必须说清「你现在玩的是什么」
+        print(f"{C['ye']}⚠ 没找到 原话池.md —— 这一局用的是内置的三张旧原话（v0.4 之前），"
+              f"不是 v0.5 的八条池子。把 原话池.md 放到同目录就恢复。{C['off']}")
         return QuotePool(
             [{"id": f"q{i + 1:02d}", "text": t, "retired": False}
              for i, t in enumerate(PIECES)],

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """本子 v0.5（原话池 + 跨机器门缝）—— 自动化测试
 
@@ -1191,6 +1191,23 @@ def test_quote_pool():
     check("池子版本", p.version == "原话池-v1")
     check("每条有 self/other 标签",
           all(q.get("to") in ("self", "other") for q in p.active()))
+
+    # v0.5.1：默认池缺失时不再静默降级 —— 仍能玩，但必须说清玩的是旧三张
+    import io
+    import contextlib
+    import tempfile
+    old_path = nb.DEFAULT_QUOTE_POOL
+    with tempfile.TemporaryDirectory() as td:
+        nb.DEFAULT_QUOTE_POOL = os.path.join(td, "原话池.md")
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                fb = nb.load_quote_pool()
+        finally:
+            nb.DEFAULT_QUOTE_POOL = old_path
+    out = buf.getvalue()
+    check("缺池子仍能玩（三张内置）", len(fb.active()) == 3 and fb.version == "内置")
+    check("缺池子会明说", "没找到 原话池.md" in out and "v0.5" in out)
 
     a = [q["id"] for q in p.select(3)]
     b = [q["id"] for q in p.select(3)]
