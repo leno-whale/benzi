@@ -59,6 +59,10 @@
     · 走到后门（西南角）时，自动抽到最近塞进去的那一张。
     · 在后门输入「门缝」，翻最近十条 + 总条数。
     · 门缝里的话不归你管，可能被抄进别人的本子，也可能被挤掉。
+  留言到底去没去网上？看门缝类型：
+    --door https://...  → 远程，联网的人都能翻到
+    --door 留话.txt     → 本地文件，只在这台机器上
+    --inbox <目录>       → 本地目录，同一个目录里的人能翻到
   注：远程门缝连不上时只打灰字提示，不会影响游戏本身。
 """
 import json
@@ -1577,9 +1581,20 @@ class Notebook:
             else:
                 print(f"{C['dim']}你把纸折一下，塞进门缝。若走到后门，可能看到它；"
                       f"没走到，替写者也可能把它抄进本子。{C['off']}")
+            self._leave_dest_hint()
         else:
             print(f"{C['dim']}你没留。门缝里的纸，还跟之前一样。{C['off']}")
         return leave
+
+    def _leave_dest_hint(self):
+        """告诉玩家这句留到了哪里，能不能被别人翻到。"""
+        if isinstance(self.door, HttpDoorStore):
+            print(f"{C['dim']}（已塞到远程门缝，联网的人都能翻到。）{C['off']}")
+        elif isinstance(self.door, InboxStore):
+            print(f"{C['dim']}（已塞到本地目录，同一个 inbox 目录里的人能翻到。）{C['off']}")
+        elif self.door is not None:
+            print(f"{C['dim']}（已塞到本地文件——只在这台机器上。想让别人翻到，"
+                  f"得加 --door https://... 或 --inbox <共享目录>。）{C['off']}")
 
     def finish(self):
         code = self.ending()
