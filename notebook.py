@@ -25,6 +25,7 @@
   展开 <页码>              花一次醒来，把折起页展开
   没记 <一句话>            记下「知道但没写」的事（不花醒来，最多 5 条）
   看                       看屋里和本子（这个不花醒来）
+  门缝                     在后门翻最近十条留话（不花醒来；要联网）
   退                       合上本子
 
 用法：
@@ -35,12 +36,34 @@
   python notebook.py --receipt 回执.md  显式开回执（非交互也开）
   python notebook.py --no-receipt       关掉回执/留话/回声（折叠仍生效）
   python notebook.py --door 留话.txt    指定单文件门缝（兼容旧门缝）
+  python notebook.py --door https://...  远程门缝（Cloudflare Worker，跨机器，与网页版共用）
   python notebook.py --inbox 门缝/inbox  跨机器门缝：一人一份文件
   python notebook.py --pool 原话池.md  指定原话池
   python notebook.py --strict-content   遇到占位原话直接拒绝运行（交付前检查）
   python notebook.py --no-fold          关掉折叠（退回 v0.4.1 行为）
   python notebook.py --echo always      本局必出回声页（auto|never）
   python notebook.py --version          版本
+
+门缝（所有玩过的人共用的一个投递口）：
+  三种来源，任选一种：
+    1) 远程（跨机器，和网页版共用同一个池）：
+         python notebook.py --door https://你的worker.workers.dev
+       国内直连 workers.dev 通常不通，先开代理/VPN；urllib 会自动读
+       HTTPS_PROXY / HTTP_PROXY 环境变量，或系统代理设置。
+    2) 本地单文件（同一台机器）：
+         python notebook.py --door 门缝/留话.txt
+    3) 本地目录（一人一份文件，同一个目录里的人都能读到）：
+         python notebook.py --inbox 门缝/inbox
+  怎么用：
+    · 一局结束后可以留一句话（最多 40 字），直接回车 = 不留。
+    · 走到后门（西南角）时，自动抽到最近塞进去的那一张。
+    · 在后门输入「门缝」，翻最近十条 + 总条数。
+    · 门缝里的话不归你管，可能被抄进别人的本子，也可能被挤掉。
+  留言到底去没去网上？看门缝类型：
+    --door https://...  → 远程，联网的人都能翻到
+    --door 留话.txt     → 本地文件，只在这台机器上
+    --inbox <目录>       → 本地目录，同一个目录里的人能翻到
+  注：远程门缝连不上时只打灰字提示，不会影响游戏本身。
 """
 import json
 import os
@@ -48,6 +71,8 @@ import random
 import re
 import sys
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime
 
 VERSION = "0.5.1"
@@ -705,6 +730,22 @@ class DoorStore:
             print(f"[门缝] 没写进去：{os.path.basename(self.path)}")
             return False
 
+    def list_recent(self, n=10):
+        """最近 n 条 + 总数；读不到返回 None。"""
+        if not self.enabled:
+            return None
+        try:
+            with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f.read().splitlines()]
+        except FileNotFoundError:
+            return {"items": [], "count": 0}
+        except OSError:
+            return None
+        lines = [ln for ln in lines if ln]
+        total = len(lines)
+        items = [{"line": t, "ts": 0.0} for t in reversed(lines[-n:])]
+        return {"items": items, "count": total}
+
 
 class InboxStore:
     """跨机器门缝：一人一份文件，读的时候按固定规则排序。
@@ -813,6 +854,19 @@ class InboxStore:
             print(f"[门缝] 没写进去：{os.path.basename(self.path)}")
             return False
 
+    def list_recent(self, n=10):
+        """最近 n 条 + 总数；读不到返回 None。"""
+        if not self.enabled:
+            return None
+        entries = []
+        for fn in self._files():
+            meta = self._meta(fn)
+            if meta and meta["body"]:
+                entries.append(meta)
+        entries.sort(key=lambda e: (e["ts"], e["file"]), reverse=True)
+        items = [{"line": e["body"][0], "ts": e["ts"].timestamp()} for e in entries[:n]]
+        return {"items": items, "count": len(entries)}
+
     def mark_read(self, filename):
         """读状态记在读的人这边；绝不在别人的文件上做标记。"""
         try:
@@ -828,14 +882,117 @@ class InboxStore:
             pass
 
 
+class HttpDoorStore:
+    """HTTP 门缝：通过 Cloudflare Worker 跨机器共用一个投递口。
+
+    接口与 DoorStore 一致：latest_line() 取最近一条，append(line) 塞一条。
+    路径是 Worker 的完整地址（可只给根，会自动补 /door），例如：
+        https://benzi-door.xxx.workers.dev
+    读写失败只警告、不抛异常——和文件门缝一样，不影响游戏本身。
+
+    代理：urllib 自动读环境变量 HTTPS_PROXY / HTTP_PROXY 或系统代理；
+    国内直连 workers.dev 通常不通，先开代理/VPN。
+    """
+
+    DEFAULT_TIMEOUT = 8
+    _HEADERS = {"User-Agent": f"benzi/{VERSION}"}
+
+    def __init__(self, url, enabled=True, timeout=None):
+        self.path = url.rstrip("/")
+        if not self.path.endswith("/door"):
+            self.path = self.path + "/door"
+        self.enabled = enabled
+        self.timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
+
+    def _fail(self, exc):
+        """统一错误提示：区分 HTTP 错误和网络不通。"""
+        if isinstance(exc, urllib.error.HTTPError):
+            print(f"{C['dim']}[门缝] 被拒（HTTP {exc.code}，{self._host()}）。{C['off']}")
+        else:
+            print(f"{C['dim']}[门缝] 连不上（{self._host()}）。"
+                  f"多半是网络问题，开代理/VPN 再试。{C['off']}")
+
+    def latest_line(self):
+        """最近一条非空留话；没有返回 None。"""
+        if not self.enabled:
+            return None
+        try:
+            req = urllib.request.Request(self.path, method="GET",
+                                         headers=self._HEADERS)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            line = (data or {}).get("line")
+            if not line:
+                return None
+            text = _one_line(line)
+            return text or None
+        except Exception as exc:
+            self._fail(exc)
+            return None
+
+    def append(self, line):
+        """塞一条进去；成功返回 True，失败 False。"""
+        if not self.enabled:
+            return False
+        text = _one_line(line)
+        if not text:
+            return False
+        # 无重试、无幂等键：网络抖动时「以为失败、其实成功」会重复写。
+        # 这是有意的取舍——门缝本来就不是精确账本，重复一句比丢一句好。
+        try:
+            body = json.dumps({"line": text}, ensure_ascii=False).encode("utf-8")
+            headers = dict(self._HEADERS)
+            headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(self.path, data=body, method="POST",
+                                         headers=headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            if (data or {}).get("ok"):
+                return True
+            print(f"{C['dim']}[门缝] 塞不进去："
+                  f"{(data or {}).get('error', '未知错误')}{C['off']}")
+            return False
+        except Exception as exc:
+            self._fail(exc)
+            return False
+
+    def list_recent(self, n=10):
+        """最近 n 条 + 总数；连不上返回 None。"""
+        if not self.enabled:
+            return None
+        print(f"{C['dim']}正在连门缝…{C['off']}")
+        try:
+            url = f"{self.path}?list={int(n)}"
+            req = urllib.request.Request(url, method="GET", headers=self._HEADERS)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            items = []
+            for it in (data or {}).get("items") or []:
+                text = _one_line(it.get("line", ""))
+                if text:
+                    items.append({"line": text, "ts": float(it.get("ts") or 0.0)})
+            return {"items": items, "count": int((data or {}).get("count") or 0)}
+        except Exception as exc:
+            self._fail(exc)
+            return None
+
+    def _host(self):
+        try:
+            from urllib.parse import urlparse
+            return urlparse(self.path).netloc
+        except Exception:
+            return "远程门缝"
+
+
 class Notebook:
     def __init__(self, seed=None, debug=False, receipt=None, name="你", echo="auto",
                  door=None, clock=None, fold=False, quote_pool=None,
-                 strict_content=False):
+                 strict_content=False, show_hint=True):
         self.quote_pool = quote_pool if quote_pool is not None else load_quote_pool()
         if strict_content and self.quote_pool.placeholder:
             raise ValueError("原话池还是占位内容，不能作为交付版运行")
         self.strict_content = bool(strict_content)
+        self.show_hint = bool(show_hint)
         self.rng = random.Random(seed)
         self.seed = seed
         self.debug = debug
@@ -902,6 +1059,18 @@ class Notebook:
     # ── 输出 ─────────────────────────────────────────────
     def banner(self, s):
         print(f"\n{C['b']}{s}{C['off']}")
+
+    def cmd_hint(self):
+        """每次输入前的操作提醒。门缝只在站在后门时出现。"""
+        items = ["n/s/e/w 走", "写 <话>", "抄", "验 <页码>", "展开 <页码>",
+                 "没记 <话>", "看"]
+        note = ""
+        if (self.pos == (2, 2) and self._door_enabled()
+                and hasattr(self.door, "list_recent")):
+            items.append("门缝")
+            note = "　（门缝：翻最近十条留话）"
+        items.append("退")
+        return f"{C['dim']}命令：{'　'.join(items)}{note}{C['off']}"
 
     def map_text(self):
         """本子背面：走过的地方。"""
@@ -997,6 +1166,34 @@ class Notebook:
                     print(f"{C['dim']}你低头看门缝。空着。{C['off']}")
             self.banner("本子背面（走过的地方）")
             print(self.map_text())
+
+    def door_history(self, n=10):
+        """在后门翻门缝：最近 n 条留话。不花醒来。"""
+        if self.pos != (2, 2):
+            print(f"{C['dim']}只有站在后门口，才翻得到门缝里那一叠。{C['off']}")
+            return
+        store = self.door if self._door_enabled() else None
+        if store is None or not hasattr(store, "list_recent"):
+            # fallback：回执也可能没有 list_recent（ReceiptStore 没实现）
+            if self._receipt_enabled() and hasattr(self.receipt, "list_recent"):
+                store = self.receipt
+            else:
+                print(f"{C['dim']}门缝关着。这一局没有留话可翻。{C['off']}")
+                return
+        data = store.list_recent(n)
+        if data is None:
+            print(f"{C['rd']}门缝现在不通。（多半是网络问题，开代理/VPN 再试。）{C['off']}")
+            return
+        items = data.get("items") or []
+        if not items:
+            print(f"{C['dim']}你把那一叠纸翻到底。一张也没有。{C['off']}")
+            return
+        print(f"{C['dim']}你把门缝里那一叠翻过来，最近的几张：{C['off']}")
+        for i, it in enumerate(items, 1):
+            print(f"{C['dim']}  {i}. 「{it['line']}」{C['off']}")
+        total = int(data.get("count") or 0)
+        if total > len(items):
+            print(f"{C['dim']}（共 {total} 张，这里只翻最近的 {len(items)} 张。）{C['off']}")
 
     # ── 回合推进 ─────────────────────────────────────────
     def next_round(self):
@@ -1304,8 +1501,10 @@ class Notebook:
         print(f"{C['cy']}{'═' * 46}{C['off']}")
         while not self.over:
             self.show()
+            if self.show_hint:
+                print("\n" + self.cmd_hint())
             try:
-                cmd = input(f"\n{C['b']}> {C['off']}").strip()
+                cmd = input(f"{C['b']}> {C['off']}").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\n（醒了。）")
                 print(f"\n{self.report()}")
@@ -1320,6 +1519,9 @@ class Notebook:
                 return
             elif head in ("看", "look", "l"):
                 self.show(full=True)
+                continue
+            elif head in ("门缝", "door"):
+                self.door_history(10)
                 continue
             elif head in ARROWS:
                 acted = self.move(head)
@@ -1350,7 +1552,7 @@ class Notebook:
                     print(f"{C['dim']}没记 <一句话>。{C['off']}")
                 continue
             else:
-                print(f"{C['dim']}不认识。n/s/e/w 走，写 <话>，抄，验 <页码>，展开 <页码>，没记 <话>，看，退。{C['off']}")
+                print(f"{C['dim']}不认识。n/s/e/w 走，写 <话>，抄，验 <页码>，展开 <页码>，没记 <话>，看，门缝，退。{C['off']}")
                 print(f"{C['dim']}后门要三张原话，还要你验过一页。{C['off']}")
                 continue
             if acted:
@@ -1385,9 +1587,20 @@ class Notebook:
             else:
                 print(f"{C['dim']}你把纸折一下，塞进门缝。若走到后门，可能看到它；"
                       f"没走到，替写者也可能把它抄进本子。{C['off']}")
+            self._leave_dest_hint()
         else:
             print(f"{C['dim']}你没留。门缝里的纸，还跟之前一样。{C['off']}")
         return leave
+
+    def _leave_dest_hint(self):
+        """告诉玩家这句留到了哪里，能不能被别人翻到。"""
+        if isinstance(self.door, HttpDoorStore):
+            print(f"{C['dim']}（已塞到远程门缝，联网的人都能翻到。）{C['off']}")
+        elif isinstance(self.door, InboxStore):
+            print(f"{C['dim']}（已塞到本地目录，同一个 inbox 目录里的人能翻到。）{C['off']}")
+        elif self.door is not None:
+            print(f"{C['dim']}（已塞到本地文件——只在这台机器上。想让别人翻到，"
+                  f"得加 --door https://... 或 --inbox <共享目录>。）{C['off']}")
 
     def finish(self):
         code = self.ending()
@@ -1454,6 +1667,7 @@ def main(argv=None):
     explicit_receipt = False
     no_receipt = False
     no_fold = False
+    no_hint = False
     quote_arg = None
     strict = False
     i = 0
@@ -1502,6 +1716,8 @@ def main(argv=None):
             strict = True
         elif a == "--no-fold":
             no_fold = True
+        elif a == "--no-hint":
+            no_hint = True
         elif a == "--no-receipt":
             no_receipt = True
         i += 1
@@ -1524,12 +1740,18 @@ def main(argv=None):
             if inbox_arg:
                 door_store = InboxStore(inbox_arg, name=name or "玩家")
             else:
-                door_store = DoorStore(door_arg or DEFAULT_DOOR_PATH)
+                door_arg_value = door_arg or DEFAULT_DOOR_PATH
+                # --door 给 http(s):// 地址时走远程门缝（Cloudflare Worker），
+                # 和网页版共用同一个跨机器留言池。
+                if door_arg_value.startswith(("http://", "https://")):
+                    door_store = HttpDoorStore(door_arg_value)
+                else:
+                    door_store = DoorStore(door_arg_value)
     try:
         pool = load_quote_pool(quote_arg)
         game = Notebook(seed=seed, debug=debug, receipt=store, name=name, echo=echo,
                         door=door_store, fold=not no_fold, quote_pool=pool,
-                        strict_content=strict)
+                        strict_content=strict, show_hint=not no_hint)
     except ValueError as exc:
         print(f"[原话池] {exc}")
         return 2
