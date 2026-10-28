@@ -50,7 +50,7 @@ import sys
 import time
 from datetime import datetime
 
-VERSION = "0.5.2"
+VERSION = "0.5.1"
 ECHO_SALT = 0x01000093
 QUOTE_SALT = 0x01005101
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -939,17 +939,15 @@ class Notebook:
 
     @staticmethod
     def _gist(text):
-        """原文清洗后取前 12 字 + ……。
+        """原文清洗（首尾空白去掉、换行压成空格）后取前 12 字 + ……。
 
-        v0.5.2：截断点不许正好落在否定词后面。
-        例：「本子上的都是你自己写的，不用验」按 12 字切会切出「……不用」，
-        读起来像「不用验」被确认了——而原句说的是反的。宁可少留一个字。
+        2026-10-28 撤回：我曾在这里加「截断点遇到否定词就退一个字」，
+        想让它别把句子读反。这是把设计当 bug 修——C 结局说的就是
+        「断在哪它不管，断在『不』字前面读起来就是反过来的一句」。
+        所以退回原样：十二个字，就是十二个字。
         """
         clean = " ".join(str(text).split())
-        cut = min(12, len(clean))
-        while cut > 1 and clean[cut - 1] in "不没别未无":
-            cut -= 1
-        return clean[:cut] + "……"
+        return clean[:12] + "……"
 
     def _fold_oldest(self):
         """每 4 次醒来折一页：最旧、非原话、没折过的页。没有就跳过。"""
@@ -962,7 +960,7 @@ class Notebook:
         p["ever_folded"] = True
         p["full_text"] = p["text"]
         p["gist"] = self._gist(p["text"])
-        p["text"] = f"（折起来的一页。只留下开头十二个字：{p['gist']} 后面的话没留下）"
+        p["text"] = f"（折起来的一页。大意：{p['gist']}）"
         self.log.append(("fold", self.round, idx + 1))
         return idx
 

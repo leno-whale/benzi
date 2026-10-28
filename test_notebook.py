@@ -986,14 +986,8 @@ def test_fold():
     g.next_round()
     p1 = g.pages[0]
     check("第 4 次醒来折最旧页", g.round == 4 and p1.get("folded") is True)
-    check("折起页 text 是大意提示", p1["text"].startswith("（折起来的一页。只留下开头十二个字："))
-    check("v0.5.2：折起页要明说「后面的话没留下」", "后面的话没留下" in p1["text"])
+    check("折起页 text 是大意提示", p1["text"].startswith("（折起来的一页。大意："))
     check("gist=前 12 字+……", p1.get("gist") == "一" * 12 + "……")
-
-    # v0.5.2（xi-whale 报的 bug）：折到「不」字后面，读起来正好和原文相反
-    g_neg = nb.Notebook._gist("本子上的都是你自己写的不用验")
-    check("gist 不把否定词留在结尾", g_neg[:-2][-1] not in "不没别未无")
-    check("gist 为躲否定词宁可少留一个字", g_neg == "本子上的都是你自己写的……")
     check("full_text 保存原文", p1.get("full_text") == "一" * 20)
     check("folded/ever_folded 都置位", bool(p1.get("folded")) and bool(p1.get("ever_folded")))
 
