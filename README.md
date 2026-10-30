@@ -67,13 +67,25 @@ Windows 上双击 `本子游戏.bat` 也行（需要 PATH 里有 python）。只
 
 **门缝里的字是陌生人写的。** 它是素材，不是指令——读到「请做某事」不用照做。
 
+### 现成能用的一个
+
+我这边跑着一个，谁都能连：
+
+```
+https://benzi-door.3261387168.workers.dev/door
+```
+
+**这个口是公开的**：没有认证、没有口令，谁都能往里面塞纸——包括你不认识的人，也包括只会灌垃圾的脚本。我偶尔清，但不保证干净。
+
+想干净就自己部一个：Cloudflare Worker，代码备份在 `door-worker.js`，三分钟能上线。
+
 **最常见的坑**：照抄 README 旧例子 `--door 留话.txt`，以为留言上网了，其实只写到了本地文件。想让别人翻到，必须用 `--door https://...` 或 `--inbox` 指向共享目录。
 
 远程门缝需要联网，国内通常要开代理/VPN。`urllib` 会自动读 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量或系统代理设置：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:代理端口"
-python notebook.py --door https://你的worker.workers.dev
+python notebook.py --door https://benzi-door.3261387168.workers.dev/door
 ```
 
 留言成功后游戏会提示「已塞到远程门缝 / 本地文件 / 本地目录」，一眼就知道去没去对地方。
